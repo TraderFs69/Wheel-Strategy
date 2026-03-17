@@ -2,27 +2,15 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
-import time
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-
-# -------------------------
-# STYLE (Bloomberg style)
-# -------------------------
-st.markdown("""
-    <style>
-    body {background-color: #0e1117; color: white;}
-    .stDataFrame {background-color: #0e1117;}
-    </style>
-""", unsafe_allow_html=True)
+st.title("🔥 TEA - Wheel Scanner PRO")
 
 # -------------------------
 # HEADER
 # -------------------------
-st.title("🔥 TEA - Wheel Scanner PRO")
-
 col1, col2, col3 = st.columns(3)
 col1.metric("Market", "OPEN")
 col2.metric("Scanner", "ACTIVE")
@@ -38,7 +26,33 @@ min_safety = st.sidebar.slider("Min Distance OTM %", 2, 15, 5)
 min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 200)
 
 # -------------------------
-# DATA
+# LOAD TICKERS (FIXED)
+# -------------------------
+@st.cache_data
+def load_sp500():
+    try:
+        # 🔥 TON FICHIER XLSX
+        df = pd.read_excel("sp500_constituents.xlsx")
+
+        # Ajuste si colonne différente
+        if "Symbol" in df.columns:
+            return df["Symbol"].tolist()
+        elif "symbol" in df.columns:
+            return df["symbol"].tolist()
+        else:
+            st.error("Colonne 'Symbol' non trouvée dans le fichier")
+            return []
+
+    except:
+        # 🔥 FALLBACK ONLINE
+        url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
+        df = pd.read_csv(url)
+        return df["Symbol"].tolist()
+
+tickers = load_sp500()
+
+# -------------------------
+# DATA FUNCTIONS
 # -------------------------
 @st.cache_data(ttl=300)
 def get_price(ticker):
@@ -78,15 +92,14 @@ def compute_metrics(price, strike, premium, dte, oi):
     return annual_return, safety, score
 
 # -------------------------
-# LOAD TICKERS
+# MAIN SCAN
 # -------------------------
-tickers = pd.read_csv("sp500.csv")["Symbol"].tolist()
-
 results = []
 
 progress = st.progress(0)
 
 for i, ticker in enumerate(tickers):
+
     price = get_price(ticker)
     if not price:
         continue
@@ -142,11 +155,11 @@ for i, ticker in enumerate(tickers):
 
     progress.progress((i + 1) / len(tickers))
 
-df = pd.DataFrame(results)
-
 # -------------------------
 # DISPLAY
 # -------------------------
+df = pd.DataFrame(results)
+
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
