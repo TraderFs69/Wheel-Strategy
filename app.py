@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import requests
 import math
+import time
 from datetime import datetime
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (Date Fix)")
+st.title("🔥 TEA - Wheel Scanner (REAL PREMIUM FIX)")
 
 # -------------------------
 # INPUT
@@ -47,12 +48,51 @@ def greeks_put(S, K, T, r, sigma):
 # DATA
 # -------------------------
 def get_price(ticker):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
-    return requests.get(url).json()["results"][0]["c"]
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
+        r = requests.get(url).json()
+        return r["results"][0]["c"]
+    except:
+        return None
 
 def get_options(ticker):
-    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-    return requests.get(url).json().get("results", [])
+    try:
+        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
+        return requests.get(url).json().get("results", [])
+    except:
+        return []
+
+# -------------------------
+# BUILD SYMBOL
+# -------------------------
+def build_option_symbol(ticker, expiration, strike):
+    try:
+        date = datetime.strptime(expiration, "%Y-%m-%d")
+        yymmdd = date.strftime("%y%m%d")
+
+        strike_int = int(float(strike) * 1000)
+        strike_str = str(strike_int).zfill(8)
+
+        return f"O:{ticker}{yymmdd}P{strike_str}"
+    except:
+        return None
+
+# -------------------------
+# GET PREMIUM (REAL)
+# -------------------------
+def get_option_premium(symbol):
+    try:
+        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
+        r = requests.get(url).json()
+
+        res = r.get("results", {})
+        last = res.get("last_trade", {}) or {}
+
+        premium = last.get("price")
+
+        return premium
+    except:
+        return None
 
 # -------------------------
 # SCAN
@@ -64,6 +104,9 @@ if run_scan:
     for ticker in tickers:
 
         price = get_price(ticker)
+        if not price:
+            continue
+
         options = get_options(ticker)
 
         for opt in options:
@@ -78,7 +121,7 @@ if run_scan:
             except:
                 continue
 
-            # 💣 FILTRE EXACT DATE (FIX)
+            # 💣 FILTRE EXACT
             if opt_date != selected_date:
                 continue
 
@@ -89,7 +132,6 @@ if run_scan:
 
             distance = (price - strike) / price
 
-            # zone wheel réaliste
             if not (0.01 <= distance <= 0.15):
                 continue
 
@@ -99,15 +141,24 @@ if run_scan:
 
             T = dte / 365
 
-            # greeks calculés
             delta, theta, vega = greeks_put(price, strike, T, 0.04, 0.30)
 
-            # premium approx stable
-            premium = abs(price - strike) * 0.03
+            # 💥 PREMIUM RÉEL
+            symbol = build_option_symbol(ticker, exp, strike)
+            if not symbol:
+                continue
+
+            premium = get_option_premium(symbol)
+
+            # 🔥 RATE LIMIT PROTECTION
+            time.sleep(0.15)
+
+            if premium is None or premium == 0:
+                continue
 
             results.append({
                 "Ticker": ticker,
-                "Expiration": exp,  # 🔥 AJOUT IMPORTANT
+                "Expiration": exp,
                 "Strike": strike,
                 "Price": price,
                 "Delta": round(delta, 3),
@@ -121,18 +172,15 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé")
+        st.error("⚠️ Aucun trade trouvé (premium réel trop faible ou rate limit)")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
-        st.subheader("🔥 Résultats")
+        st.subheader("🔥 Résultats (REAL DATA)")
         st.dataframe(df, use_container_width=True)
 
         st.subheader("🏆 Top 10")
         st.write(df.head(10))
-
-        # 🔥 DEBUG UTILE
-        st.write("Dates trouvées :", df["Expiration"].unique())
 
 else:
     st.info("👉 Clique sur Lancer le scan")
