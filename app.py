@@ -19,7 +19,7 @@ mode = st.sidebar.selectbox(
 )
 
 # -------------------------
-# MODE LOGIC (ASSOUPLI)
+# MODE LOGIC
 # -------------------------
 if mode == "Conservateur":
     min_return = 2
@@ -61,33 +61,46 @@ tickers = load_sp500()
 # -------------------------
 @st.cache_data(ttl=300)
 def get_price(ticker):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
-    r = requests.get(url).json()
-    return r["results"][0]["c"] if "results" in r else None
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
+        r = requests.get(url).json()
+        return r["results"][0]["c"] if "results" in r else None
+    except:
+        return None
 
 
 @st.cache_data(ttl=300)
 def get_options_reference(ticker):
-    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-    r = requests.get(url).json()
-    return r.get("results", [])
+    try:
+        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
+        r = requests.get(url).json()
+        return r.get("results", [])
+    except:
+        return []
 
 
 @st.cache_data(ttl=300)
 def get_option_snapshot(option_ticker):
-    url = f"https://api.polygon.io/v3/snapshot/options/{option_ticker}?apiKey={API_KEY}"
-    r = requests.get(url).json()
+    try:
+        url = f"https://api.polygon.io/v3/snapshot/options/{option_ticker}?apiKey={API_KEY}"
+        r = requests.get(url).json()
+    except:
+        return None
 
-    if "results" not in r:
+    if "results" not in r or r["results"] is None:
         return None
 
     res = r["results"]
 
-    greeks = res.get("greeks", {})
-    last_quote = res.get("last_quote", {})
+    if not isinstance(res, dict):
+        return None
 
-    bid = last_quote.get("bid", 0)
-    ask = last_quote.get("ask", 0)
+    greeks = res.get("greeks") if isinstance(res.get("greeks"), dict) else {}
+    last_quote = res.get("last_quote") if isinstance(res.get("last_quote"), dict) else {}
+
+    bid = last_quote.get("bid", 0) if last_quote else 0
+    ask = last_quote.get("ask", 0) if last_quote else 0
+
     mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
 
     return {
@@ -95,7 +108,7 @@ def get_option_snapshot(option_ticker):
         "theta": greeks.get("theta"),
         "iv": res.get("implied_volatility"),
         "mid": mid,
-        "volume": res.get("day", {}).get("volume", 0)
+        "volume": res.get("day", {}).get("volume", 0) if isinstance(res.get("day"), dict) else 0
     }
 
 
@@ -107,7 +120,7 @@ def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
     if not premium or premium == 0:
         return None
 
-    annual_return = (premium / strike) * (365 / max(dte,1))
+    annual_return = (premium / strike) * (365 / max(dte, 1))
     safety = (price - strike) / price
     pop = 1 - abs(delta)
 
@@ -147,7 +160,6 @@ for i, ticker in enumerate(tickers[:150]):
         continue
 
     options = get_options_reference(ticker)
-    st.write(f"{ticker} options:", len(options))
 
     for opt in options:
 
@@ -190,13 +202,12 @@ for i, ticker in enumerate(tickers[:150]):
             premium = snapshot.get("mid", 0)
             volume = snapshot.get("volume", 0)
 
-        # fallback premium
         if not premium or premium == 0:
             premium = abs(price - strike) * 0.05
 
         if delta is None:
             debug["delta_missing"] += 1
-            delta = -0.20  # fallback intelligent
+            delta = -0.20
 
         if not (delta_range[0] <= delta <= delta_range[1]):
             continue
@@ -252,7 +263,7 @@ if not df.empty:
     st.write(df.head(5))
 
 else:
-    st.warning("⚠️ Aucun trade trouvé — mais scanner fonctionne")
+    st.warning("⚠️ Aucun trade trouvé — scanner fonctionnel")
 
 # -------------------------
 # DEBUG
