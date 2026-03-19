@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner PRO FINAL")
+st.title("🔥 TEA - Wheel Scanner PRO FINAL (STABLE)")
 
 # -------------------------
 # INPUT
@@ -49,8 +49,11 @@ def load_sp500():
 
 @st.cache_data(ttl=300)
 def get_options(ticker):
-    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-    return requests.get(url).json().get("results", [])
+    try:
+        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
+        return requests.get(url).json().get("results", [])
+    except:
+        return []
 
 @st.cache_data(ttl=300)
 def get_price(ticker):
@@ -66,7 +69,6 @@ def get_snapshot(symbol):
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
         res = r.get("results", {})
-
         greeks = res.get("greeks", {}) or {}
 
         return {
@@ -86,6 +88,7 @@ if run_scan:
     tickers = load_sp500()
 
     results = []
+    total_candidates = 0
     progress = st.progress(0)
 
     for i, ticker in enumerate(tickers):
@@ -116,18 +119,23 @@ if run_scan:
             if not strike or strike >= price:
                 continue
 
-            # 🎯 DISTANCE (proxy delta)
+            # 🎯 DISTANCE (filtre principal)
             distance = (price - strike) / price
-            if not (0.03 <= distance <= 0.10):
+            if not (0.02 <= distance <= 0.15):
                 continue
 
+            total_candidates += 1
+
             dte = (opt_date - datetime.today().date()).days
-            T = max(dte / 365, 0.01)
+            if dte <= 0:
+                continue
+
+            T = dte / 365
 
             # 🎯 DELTA INTERNE
             delta_calc = put_delta(price, strike, T, risk_free_rate, 0.30)
 
-            # 🔥 SNAPSHOT (greeks réels)
+            # 🔥 SNAPSHOT
             snap = get_snapshot(opt.get("ticker"))
             if not snap:
                 continue
@@ -137,12 +145,10 @@ if run_scan:
             # 💰 PRICING
             premium = put_price_bs(price, strike, T, risk_free_rate, iv)
 
-            # -------------------------
-            # 💣 RANKING
-            # -------------------------
             annual_return = (premium / strike) * (365 / dte)
 
-            delta_score = 1 - abs(abs(delta_calc) - 0.25)  # proche de -0.25 = meilleur
+            # 💣 SCORE
+            delta_score = 1 - abs(abs(delta_calc) - 0.25)
             iv_score = iv
             theta_score = abs(snap["theta"]) if snap["theta"] else 0
 
@@ -169,34 +175,48 @@ if run_scan:
                 "Score": round(score, 3)
             })
 
-            time.sleep(0.01)  # évite rate limit
+            time.sleep(0.01)
 
         progress.progress((i + 1) / len(tickers))
 
+    # -------------------------
+    # DEBUG
+    # -------------------------
+    st.write("🔎 Candidats trouvés (avant enrichissement):", total_candidates)
+    st.write("📊 Trades finaux:", len(results))
+
     df = pd.DataFrame(results)
 
-    # 🎯 FILTRE FINAL DELTA
+    if df.empty:
+        st.error("⚠️ Aucun résultat — marché ou filtres")
+        st.stop()
+
+    # -------------------------
+    # FILTRE FINAL DELTA
+    # -------------------------
     df = df[
         (df["Delta calc"] <= -0.20) &
         (df["Delta calc"] >= -0.30)
     ]
 
-    if not df.empty:
+    if df.empty:
+        st.warning("⚠️ Aucun trade dans la zone delta stricte → affichage élargi")
+        df = pd.DataFrame(results)
 
-        df = df.sort_values("Score", ascending=False)
+    df = df.sort_values("Score", ascending=False)
 
-        col1, col2 = st.columns([3,1])
+    # -------------------------
+    # DISPLAY
+    # -------------------------
+    col1, col2 = st.columns([3,1])
 
-        with col1:
-            st.subheader("🔥 Wheel Trades Ranked")
-            st.dataframe(df, use_container_width=True)
+    with col1:
+        st.subheader("🔥 Wheel Trades")
+        st.dataframe(df, use_container_width=True)
 
-        with col2:
-            st.subheader("🏆 TOP 10")
-            st.write(df.head(10))
-
-    else:
-        st.error("⚠️ Aucun trade trouvé")
+    with col2:
+        st.subheader("🏆 TOP 10")
+        st.write(df.head(10))
 
 else:
     st.info("👉 Clique sur Lancer le scan")
