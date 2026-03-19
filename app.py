@@ -9,7 +9,7 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (MASSIVE SDK FINAL)")
+st.title("🔥 TEA - Wheel Scanner (MASSIVE SNAPSHOT PRO)")
 
 selected_date = st.sidebar.date_input("Expiration")
 run_scan = st.sidebar.button("🚀 Lancer")
@@ -39,22 +39,6 @@ def greeks_put(S, K, T, r, sigma):
     return delta, theta, vega
 
 # -------------------------
-# PRICE (FIX ICI)
-# -------------------------
-def get_price(ticker):
-    try:
-        data = client.get_previous_close_agg(ticker)
-
-        if not data or len(data) == 0:
-            return None
-
-        return data[0].close  # 🔥 FIX
-
-    except Exception as e:
-        st.write(f"Erreur prix {ticker}: {e}")
-        return None
-
-# -------------------------
 # OPTIONS
 # -------------------------
 def get_options(ticker):
@@ -72,10 +56,6 @@ if run_scan:
     results = []
 
     for ticker in tickers:
-
-        price = get_price(ticker)
-        if not price:
-            continue
 
         options = get_options(ticker)
 
@@ -96,6 +76,25 @@ if run_scan:
 
             strike = opt.strike_price
 
+            # 🔥 SYMBOL CORRECT
+            symbol = opt.ticker
+
+            try:
+                snap = client.get_snapshot_option(ticker, symbol)
+            except Exception as e:
+                continue
+
+            time.sleep(0.05)
+
+            # -------------------------
+            # UNDERLYING PRICE (snapshot)
+            # -------------------------
+            underlying = snap.underlying_asset if hasattr(snap, "underlying_asset") else None
+            price = getattr(underlying, "price", None) if underlying else None
+
+            if price is None:
+                continue
+
             if strike >= price:
                 continue
 
@@ -110,51 +109,49 @@ if run_scan:
 
             T = dte / 365
 
-            # fallback greeks
-            delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
-
-            # 🔥 UTILISER LE BON SYMBOL
-            symbol = opt.ticker
-
-            try:
-                st.write(f"DEBUG → {ticker} | {symbol}")
-                snap = client.get_snapshot_option(ticker, symbol)
-            except Exception as e:
-                st.write(f"Erreur snapshot {symbol}: {e}")
-                continue
-
-            time.sleep(0.1)
-
+            # -------------------------
+            # GREEKS
+            # -------------------------
             greeks = snap.greeks if snap.greeks else None
-            last = snap.last_trade if snap.last_trade else None
-            quote = snap.last_quote if snap.last_quote else None
 
             delta_real = getattr(greeks, "delta", None) if greeks else None
             theta_real = getattr(greeks, "theta", None) if greeks else None
             vega_real = getattr(greeks, "vega", None) if greeks else None
 
+            delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
+
             delta = delta_real if delta_real is not None else delta_calc
             theta = theta_real if theta_real is not None else theta_calc
             vega = vega_real if vega_real is not None else vega_calc
 
+            # -------------------------
+            # PREMIUM (MATCH GOOGLE)
+            # -------------------------
+            quote = snap.last_quote if snap.last_quote else None
+            trade = snap.last_trade if snap.last_trade else None
+
             bid = getattr(quote, "bid", None) if quote else None
             ask = getattr(quote, "ask", None) if quote else None
-            last_price = getattr(last, "price", None) if last else None
 
-            if bid and ask:
+            # 🔥 MID PRICE = navigateur
+            if bid is not None and ask is not None:
                 premium = (bid + ask) / 2
-            elif last_price:
-                premium = last_price
+
+            elif trade and hasattr(trade, "price"):
+                premium = trade.price
+
             else:
-                intrinsic = max(0, strike - price)
-                extrinsic = price * 0.02 * math.sqrt(T)
-                premium = intrinsic + extrinsic
+                continue  # skip si pas de data réelle
+
+            # 🔥 filtre liquidité (option tradable)
+            if bid is None or bid < 0.05:
+                continue
 
             results.append({
                 "Ticker": ticker,
                 "Expiration": exp,
                 "Strike": strike,
-                "Price": price,
+                "Price": round(price, 2),
                 "Delta": round(delta, 3),
                 "Theta": round(theta, 2),
                 "Vega": round(vega, 2),
@@ -166,7 +163,7 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé")
+        st.error("⚠️ Aucun trade trouvé (filtre strict actif)")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
