@@ -1,76 +1,79 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner PRO MAX")
+st.title("🔥 TEA - Wheel Scanner ELITE")
 
 # -------------------------
-# MODE SELECTION
+# USER INPUT
 # -------------------------
-st.sidebar.header("🎯 Mode")
+st.sidebar.header("🎯 Paramètres")
 
-mode = st.sidebar.selectbox(
-    "Choix du style",
-    ["Conservateur", "Neutre", "Agressif"]
+target_delta = st.sidebar.slider("Delta cible", 0.10, 0.40, 0.20, 0.05)
+
+week_choice = st.sidebar.selectbox(
+    "Expiration",
+    ["Prochain vendredi", "2e vendredi", "3e vendredi"]
 )
 
-# -------------------------
-# MODE LOGIC
-# -------------------------
-if mode == "Conservateur":
-    min_return = 2
-    min_safety = 2
-    min_pop = 65
-    delta_range = (-0.30, -0.10)
-
-elif mode == "Neutre":
-    min_return = 3
-    min_safety = 1.5
-    min_pop = 60
-    delta_range = (-0.35, -0.08)
-
-else:  # Agressif
-    min_return = 4
-    min_safety = 1
-    min_pop = 50
-    delta_range = (-0.45, -0.05)
-
 min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 0)
+
+# -------------------------
+# CALCUL VENDREDI
+# -------------------------
+def get_target_friday(n):
+    today = datetime.today()
+    friday = today + timedelta((4 - today.weekday()) % 7)
+    return friday + timedelta(weeks=n)
+
+week_map = {
+    "Prochain vendredi": 0,
+    "2e vendredi": 1,
+    "3e vendredi": 2
+}
+
+target_date = get_target_friday(week_map[week_choice]).date()
 
 # -------------------------
 # LOAD TICKERS
 # -------------------------
 @st.cache_data
 def load_sp500():
-    try:
-        df = pd.read_excel("sp500_constituents.xlsx")
-        return df["Symbol"].tolist()
-    except:
-        url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
-        df = pd.read_csv(url)
-        return df["Symbol"].tolist()
+    url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
+    df = pd.read_csv(url)
+    return df["Symbol"].tolist()
 
 tickers = load_sp500()
 
 # -------------------------
-# DATA FUNCTIONS
+# DATA
 # -------------------------
 @st.cache_data(ttl=300)
 def get_price(ticker):
     try:
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
         r = requests.get(url).json()
-        return r["results"][0]["c"] if "results" in r else None
+        return r["results"][0]["c"]
     except:
         return None
 
 
 @st.cache_data(ttl=300)
-def get_options_reference(ticker):
+def get_history(ticker):
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/200/{datetime.today().strftime('%Y-%m-%d')}?apiKey={API_KEY}"
+        r = requests.get(url).json()
+        return pd.DataFrame(r["results"])
+    except:
+        return None
+
+
+@st.cache_data(ttl=300)
+def get_options(ticker):
     try:
         url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
         r = requests.get(url).json()
@@ -80,173 +83,142 @@ def get_options_reference(ticker):
 
 
 @st.cache_data(ttl=300)
-def get_option_snapshot(option_ticker):
+def get_snapshot(symbol):
     try:
-        url = f"https://api.polygon.io/v3/snapshot/options/{option_ticker}?apiKey={API_KEY}"
+        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
+
+        if "results" not in r or not isinstance(r["results"], dict):
+            return None
+
+        res = r["results"]
+
+        greeks = res.get("greeks", {})
+        quote = res.get("last_quote", {})
+
+        bid = quote.get("bid", 0)
+        ask = quote.get("ask", 0)
+        mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
+
+        return {
+            "delta": greeks.get("delta"),
+            "theta": greeks.get("theta"),
+            "iv": res.get("implied_volatility"),
+            "mid": mid,
+            "volume": res.get("day", {}).get("volume", 0)
+        }
     except:
         return None
 
-    if "results" not in r or r["results"] is None:
-        return None
 
-    res = r["results"]
+# -------------------------
+# STOCK SCORING
+# -------------------------
+def stock_score(df):
 
-    if not isinstance(res, dict):
-        return None
+    if df is None or len(df) < 200:
+        return 0
 
-    greeks = res.get("greeks") if isinstance(res.get("greeks"), dict) else {}
-    last_quote = res.get("last_quote") if isinstance(res.get("last_quote"), dict) else {}
+    df["ema50"] = df["c"].ewm(span=50).mean()
+    df["ema200"] = df["c"].ewm(span=200).mean()
 
-    bid = last_quote.get("bid", 0) if last_quote else 0
-    ask = last_quote.get("ask", 0) if last_quote else 0
+    price = df["c"].iloc[-1]
+    ema50 = df["ema50"].iloc[-1]
+    ema200 = df["ema200"].iloc[-1]
 
-    mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
+    score = 0
 
-    return {
-        "delta": greeks.get("delta"),
-        "theta": greeks.get("theta"),
-        "iv": res.get("implied_volatility"),
-        "mid": mid,
-        "volume": res.get("day", {}).get("volume", 0) if isinstance(res.get("day"), dict) else 0
-    }
+    if price > ema50:
+        score += 0.5
+    if ema50 > ema200:
+        score += 0.5
+
+    return score
 
 
 # -------------------------
-# METRICS
-# -------------------------
-def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
-
-    if not premium or premium == 0:
-        return None
-
-    annual_return = (premium / strike) * (365 / max(dte, 1))
-    safety = (price - strike) / price
-    pop = 1 - abs(delta)
-
-    theta_income = abs(theta) if theta else 0
-    liquidity = min((oi + volume) / 2000, 1)
-    iv_score = min(iv / 0.5, 1) if iv else 0
-
-    score = (
-        annual_return * 0.30 +
-        safety * 0.20 +
-        pop * 0.20 +
-        theta_income * 0.10 +
-        iv_score * 0.10 +
-        liquidity * 0.10
-    )
-
-    return annual_return, safety, pop, score
-
-
-# -------------------------
-# MAIN SCAN
+# SCAN
 # -------------------------
 results = []
-progress = st.progress(0)
 
-debug = {
-    "options_total": 0,
-    "snapshot_missing": 0,
-    "delta_missing": 0,
-    "kept": 0
-}
-
-for i, ticker in enumerate(tickers[:150]):
+for ticker in tickers[:100]:
 
     price = get_price(ticker)
     if not price:
         continue
 
-    options = get_options_reference(ticker)
+    hist = get_history(ticker)
+    s_score = stock_score(hist)
 
-    for opt in options:
+    if s_score < 0.5:
+        continue
+
+    options = get_options(ticker)
+
+    for opt in options[:80]:
 
         if opt.get("contract_type") != "put":
             continue
 
         strike = opt.get("strike_price")
         expiration = opt.get("expiration_date")
-        option_symbol = opt.get("ticker")
 
-        if not strike or not expiration or not option_symbol:
+        if not strike or not expiration:
             continue
 
-        expiration_dt = datetime.strptime(expiration, "%Y-%m-%d")
-        dte = (expiration_dt - datetime.today()).days
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d").date()
 
-        if dte < 20 or dte > 60:
+        # 🎯 Weekly filter
+        if exp_date != target_date:
+            continue
+
+        # 🎯 Distance filter (wheel)
+        distance = (price - strike) / price
+        if distance < 0.01 or distance > 0.12:
+            continue
+
+        snapshot = get_snapshot(opt.get("ticker"))
+
+        if not snapshot:
+            continue
+
+        delta = snapshot.get("delta")
+        premium = snapshot.get("mid")
+
+        if not delta or not premium:
+            continue
+
+        # 🎯 Delta cible
+        if abs(abs(delta) - target_delta) > 0.05:
             continue
 
         oi = opt.get("open_interest", 0)
         if oi < min_oi:
             continue
 
-        debug["options_total"] += 1
+        dte = (exp_date - datetime.today().date()).days
 
-        snapshot = get_option_snapshot(option_symbol)
+        annual_return = (premium / strike) * (365 / max(dte,1))
+        pop = 1 - abs(delta)
 
-        # 🔥 FALLBACK COMPLET
-        if not snapshot:
-            debug["snapshot_missing"] += 1
-            delta = -0.20
-            theta = 0
-            iv = 0.30
-            premium = abs(price - strike) * 0.05
-            volume = 0
-        else:
-            delta = snapshot.get("delta")
-            theta = snapshot.get("theta", 0)
-            iv = snapshot.get("iv", 0.30)
-            premium = snapshot.get("mid", 0)
-            volume = snapshot.get("volume", 0)
-
-        if not premium or premium == 0:
-            premium = abs(price - strike) * 0.05
-
-        if delta is None:
-            debug["delta_missing"] += 1
-            delta = -0.20
-
-        if not (delta_range[0] <= delta <= delta_range[1]):
-            continue
-
-        metrics = compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume)
-        if not metrics:
-            continue
-
-        annual_return, safety, pop, score = metrics
-
-        if annual_return * 100 < min_return:
-            continue
-
-        if safety * 100 < min_safety:
-            continue
-
-        if pop * 100 < min_pop:
-            continue
-
-        debug["kept"] += 1
+        score = (
+            annual_return * 0.3 +
+            pop * 0.2 +
+            s_score * 0.3 +
+            (snapshot.get("iv", 0.3)) * 0.2
+        )
 
         results.append({
             "Ticker": ticker,
-            "Price": round(price, 2),
+            "Price": round(price,2),
             "Strike": strike,
-            "Premium": round(premium, 2),
-            "DTE": dte,
-            "Annual %": round(annual_return * 100, 2),
-            "Safety %": round(safety * 100, 2),
-            "POP %": round(pop * 100, 2),
-            "Delta": round(delta, 2),
-            "Theta": round(theta, 3),
-            "IV": round(iv, 2),
-            "Volume": volume,
-            "OI": oi,
-            "Score": round(score, 3)
+            "Premium": round(premium,2),
+            "Delta": round(delta,2),
+            "POP": round(pop*100,1),
+            "Stock Score": s_score,
+            "Annual %": round(annual_return*100,1),
+            "Score": round(score,3)
         })
-
-    progress.progress((i + 1) / len(tickers[:150]))
 
 # -------------------------
 # DISPLAY
@@ -256,19 +228,8 @@ df = pd.DataFrame(results)
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
-    st.subheader(f"📊 Opportunities ({mode})")
+    st.subheader("🔥 Meilleures opportunités Wheel")
     st.dataframe(df, use_container_width=True)
 
-    st.subheader("🏆 Top 5")
-    st.write(df.head(5))
-
 else:
-    st.warning("⚠️ Aucun trade trouvé — scanner fonctionnel")
-
-# -------------------------
-# DEBUG
-# -------------------------
-st.subheader("🔍 Debug Info")
-st.write(debug)
-st.write("Résultats finaux:", len(results))
-st.caption(f"Tickers scanned: {len(tickers[:150])}")
+    st.warning("⚠️ Aucun trade trouvé — essaie un delta plus large")
