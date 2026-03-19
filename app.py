@@ -1,29 +1,37 @@
 import streamlit as st
 import pandas as pd
 import requests
-import numpy as np
+import math
 from datetime import datetime
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (Delta Interne)")
+st.title("🔥 TEA - Wheel Scanner (Delta Interne PRO)")
 
 # -------------------------
 # INPUT
 # -------------------------
-selected_date = st.sidebar.date_input("Expiration", datetime.today())
+st.sidebar.header("📅 Paramètres")
+
+selected_date = st.sidebar.date_input(
+    "Choisir une expiration (vendredi recommandé)",
+    datetime.today()
+)
+
 run_scan = st.sidebar.button("🚀 Calculer")
 
-# paramètres modèle
+# -------------------------
+# PARAMÈTRES MODÈLE
+# -------------------------
 risk_free_rate = 0.04
-volatility = 0.30  # approximation
+volatility = 0.30
 
 # -------------------------
 # NORMAL CDF
 # -------------------------
 def norm_cdf(x):
-    return 0.5 * (1 + np.math.erf(x / np.sqrt(2)))
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
 # -------------------------
 # DELTA PUT (Black-Scholes)
@@ -32,11 +40,11 @@ def put_delta(S, K, T, r, sigma):
     if T <= 0:
         return 0
 
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     return norm_cdf(d1) - 1
 
 # -------------------------
-# DATA
+# DATA FUNCTIONS
 # -------------------------
 @st.cache_data(ttl=300)
 def get_options(ticker):
@@ -112,11 +120,11 @@ if run_scan:
             if not strike or strike >= price:
                 continue
 
-            # temps en années
+            # temps
             dte = (opt_date - datetime.today().date()).days
             T = max(dte / 365, 0.01)
 
-            # 🎯 DELTA INTERNE
+            # 🎯 delta interne
             delta = put_delta(price, strike, T, risk_free_rate, volatility)
 
             if not (-0.30 <= delta <= -0.20):
@@ -128,9 +136,9 @@ if run_scan:
                 "Ticker": ticker,
                 "Price": round(price, 2),
                 "Strike": strike,
-                "Delta (calc)": round(delta, 3),
+                "Delta": round(delta, 3),
                 "Premium": round(premium, 2),
-                "Premium/Strike %": round(premium / strike * 100, 2) if strike else 0,
+                "Premium/Strike %": round((premium / strike) * 100, 2),
                 "Bid": bid,
                 "Ask": ask,
                 "DTE": dte
@@ -141,10 +149,10 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if not df.empty:
-        st.subheader("🔥 Wheel Trades (Delta Interne)")
+        st.subheader("🔥 Wheel Trades détectés")
         st.dataframe(df.sort_values("Premium/Strike %", ascending=False), use_container_width=True)
     else:
-        st.error("⚠️ Aucun trade trouvé (élargir critères)")
+        st.error("⚠️ Aucun trade trouvé — élargir critères")
 
 else:
     st.info("👉 Clique sur Calculer")
