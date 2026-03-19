@@ -6,19 +6,19 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🎯 TEA - Wheel Scanner (Phase 1: Sélection Options)")
+st.title("🎯 TEA - Wheel Scanner (Delta Finder)")
 
 # -------------------------
-# DATE PICKER
+# SIDEBAR
 # -------------------------
-st.sidebar.header("📅 Expiration")
+st.sidebar.header("📅 Paramètres")
 
 selected_date = st.sidebar.date_input(
     "Choisir une date d'expiration",
     datetime.today()
 )
 
-selected_date = selected_date.strftime("%Y-%m-%d")
+run_scan = st.sidebar.button("🚀 Calculer")
 
 # -------------------------
 # LOAD TICKERS
@@ -45,7 +45,7 @@ def get_price(ticker):
 @st.cache_data(ttl=300)
 def get_options(ticker):
     try:
-        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
+        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=1000&apiKey={API_KEY}"
         return requests.get(url).json().get("results", [])
     except:
         return []
@@ -57,7 +57,7 @@ def get_snapshot(symbol):
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
 
-        if "results" not in r:
+        if "results" not in r or not isinstance(r["results"], dict):
             return None
 
         res = r["results"]
@@ -78,76 +78,97 @@ def get_snapshot(symbol):
 # -------------------------
 # SCAN
 # -------------------------
-results = []
+if run_scan:
 
-progress = st.progress(0)
+    results = []
+    progress = st.progress(0)
 
-for i, ticker in enumerate(tickers[:100]):  # limite pour vitesse
+    selected_date_str = selected_date.strftime("%Y-%m-%d")
 
-    price = get_price(ticker)
-    if not price:
-        continue
+    st.write(f"🔎 Scan pour expiration: {selected_date_str}")
 
-    options = get_options(ticker)
+    all_found_dates = set()
 
-    for opt in options[:100]:
+    for i, ticker in enumerate(tickers[:100]):
 
-        if opt.get("contract_type") != "put":
+        price = get_price(ticker)
+        if not price:
             continue
 
-        if opt.get("expiration_date") != selected_date:
-            continue
+        options = get_options(ticker)
 
-        snapshot = get_snapshot(opt.get("ticker"))
-        if not snapshot:
-            continue
+        for opt in options:
 
-        delta = snapshot.get("delta")
+            exp = opt.get("expiration_date")
+            if exp:
+                all_found_dates.add(exp)
 
-        if delta is None:
-            continue
+            if opt.get("contract_type") != "put":
+                continue
 
-        # 🎯 FILTRE DELTA
-        if not (-0.30 <= delta <= -0.20):
-            continue
+            # 🎯 tolérance date (important)
+            try:
+                opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            except:
+                continue
 
-        strike = opt.get("strike_price")
+            if abs((opt_date - selected_date).days) > 2:
+                continue
 
-        results.append({
-            "Ticker": ticker,
-            "Price": round(price, 2),
-            "Strike": strike,
-            "Delta": round(delta, 2),
-            "Bid": snapshot.get("bid", 0),
-            "Ask": snapshot.get("ask", 0),
-            "Volume": snapshot.get("volume", 0),
-            "Expiration": selected_date
-        })
+            snapshot = get_snapshot(opt.get("ticker"))
+            if not snapshot:
+                continue
 
-    progress.progress((i + 1) / len(tickers[:100]))
+            delta = snapshot.get("delta")
 
-# -------------------------
-# DISPLAY PAR STOCK
-# -------------------------
-df = pd.DataFrame(results)
+            if delta is None:
+                continue
 
-if not df.empty:
+            # 🎯 filtre delta
+            if not (-0.30 <= delta <= -0.20):
+                continue
 
-    st.subheader("📊 Options trouvées (-0.20 à -0.30 delta)")
+            results.append({
+                "Ticker": ticker,
+                "Price": round(price, 2),
+                "Strike": opt.get("strike_price"),
+                "Delta": round(delta, 2),
+                "Bid": snapshot.get("bid", 0),
+                "Ask": snapshot.get("ask", 0),
+                "Volume": snapshot.get("volume", 0),
+                "Expiration": exp
+            })
 
-    # tri
-    df = df.sort_values(["Ticker", "Delta"])
+        progress.progress((i + 1) / len(tickers[:100]))
 
-    st.dataframe(df, use_container_width=True)
+    # -------------------------
+    # DEBUG EXPIRATIONS
+    # -------------------------
+    st.subheader("📅 Expirations disponibles (debug)")
+    st.write(sorted(list(all_found_dates))[:20])
 
-    # 🔥 regroupé par stock
-    st.subheader("📌 Par stock")
+    # -------------------------
+    # DISPLAY
+    # -------------------------
+    df = pd.DataFrame(results)
 
-    for ticker in df["Ticker"].unique():
-        st.markdown(f"### {ticker}")
-        st.dataframe(df[df["Ticker"] == ticker], use_container_width=True)
+    if not df.empty:
+
+        df = df.sort_values(["Ticker", "Delta"])
+
+        st.subheader("📊 Options trouvées (-0.20 à -0.30 delta)")
+        st.dataframe(df, use_container_width=True)
+
+        st.subheader("📌 Par stock")
+
+        for ticker in df["Ticker"].unique():
+            st.markdown(f"### {ticker}")
+            st.dataframe(df[df["Ticker"] == ticker], use_container_width=True)
+
+    else:
+        st.warning("⚠️ Aucune option trouvée — vérifier debug expirations")
+
+    st.caption(f"Options trouvées: {len(df)}")
 
 else:
-    st.warning("⚠️ Aucune option trouvée pour cette date")
-
-st.caption(f"Options trouvées: {len(df)}")
+    st.info("👉 Choisis une date puis clique sur Calculer")
