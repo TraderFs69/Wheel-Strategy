@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import requests
 import math
+import time
 from datetime import datetime
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (FINAL WORKING VERSION)")
+st.title("🔥 TEA - Wheel Scanner (FINAL FIX RATE LIMIT)")
 
 # -------------------------
 # INPUT
@@ -21,7 +22,7 @@ run_scan = st.sidebar.button("🚀 Lancer")
 tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
 # -------------------------
-# BUILD OPTION SYMBOL (FIX CRITIQUE)
+# BUILD OPTION SYMBOL
 # -------------------------
 def build_option_symbol(ticker, expiration, strike, contract_type):
     try:
@@ -64,7 +65,7 @@ def get_snapshot(symbol):
         return {}
 
 # -------------------------
-# BLACK-SCHOLES DELTA (fallback)
+# BLACK-SCHOLES DELTA
 # -------------------------
 def norm_cdf(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
@@ -92,9 +93,7 @@ if run_scan:
 
         candidates = []
 
-        # -------------------------
-        # STEP 1: FILTER
-        # -------------------------
+        # STEP 1: FILTRE
         for opt in options:
 
             if opt.get("contract_type") != "put":
@@ -120,12 +119,10 @@ if run_scan:
             if 0.02 <= distance <= 0.10:
                 candidates.append((opt, distance))
 
-        # 🔥 limiter appels API
-        candidates = sorted(candidates, key=lambda x: x[1])[:20]
+        # 🔥 LIMITATION INTELLIGENTE
+        candidates = sorted(candidates, key=lambda x: x[1])[:10]
 
-        # -------------------------
         # STEP 2: SNAPSHOT
-        # -------------------------
         for opt, distance in candidates:
 
             symbol = build_option_symbol(
@@ -139,6 +136,9 @@ if run_scan:
                 continue
 
             snap = get_snapshot(symbol) or {}
+
+            # 💣 RATE LIMIT FIX
+            time.sleep(0.25)
 
             greeks = snap.get("greeks", {}) or {}
             last_trade = snap.get("last_trade", {}) or {}
