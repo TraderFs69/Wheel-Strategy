@@ -6,17 +6,19 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("⚡ TEA - Wheel Scanner (DELTA SMART)")
+st.title("⚡ TEA - Wheel Scanner (Distance = Delta proxy)")
 
 # -------------------------
 # INPUT
 # -------------------------
-selected_date = st.sidebar.date_input("Expiration", datetime.today())
-run_scan = st.sidebar.button("🚀 Calculer")
+st.sidebar.header("📅 Paramètres")
 
-# Delta cible
-target_min = -0.30
-target_max = -0.20
+selected_date = st.sidebar.date_input(
+    "Choisir une expiration (vendredi recommandé)",
+    datetime.today()
+)
+
+run_scan = st.sidebar.button("🚀 Calculer")
 
 # -------------------------
 # LOAD TICKERS
@@ -29,7 +31,7 @@ def load_sp500():
 tickers = load_sp500()
 
 # -------------------------
-# DATA
+# DATA FUNCTIONS
 # -------------------------
 @st.cache_data(ttl=300)
 def get_price(ticker):
@@ -48,27 +50,6 @@ def get_options(ticker):
     except:
         return []
 
-
-@st.cache_data(ttl=300)
-def get_snapshot(symbol):
-    try:
-        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        res = r.get("results", {})
-
-        greeks = res.get("greeks", {}) or {}
-        quote = res.get("last_quote", {}) or {}
-
-        return {
-            "delta": greeks.get("delta"),
-            "bid": quote.get("bid", 0),
-            "ask": quote.get("ask", 0),
-            "volume": res.get("day", {}).get("volume", 0)
-        }
-    except:
-        return None
-
-
 # -------------------------
 # SCAN
 # -------------------------
@@ -77,7 +58,11 @@ if run_scan:
     results = []
     progress = st.progress(0)
 
-    for i, ticker in enumerate(tickers[:50]):  # limite vitesse
+    selected_date_str = selected_date.strftime("%Y-%m-%d")
+
+    st.write(f"🔎 Scan pour expiration: {selected_date_str}")
+
+    for i, ticker in enumerate(tickers[:50]):  # rapide
 
         price = get_price(ticker)
         if not price:
@@ -85,22 +70,23 @@ if run_scan:
 
         options = get_options(ticker)
 
-        filtered = []
-
-        # 🎯 PRÉ-FILTRE INTELLIGENT
         for opt in options:
 
+            # seulement puts
             if opt.get("contract_type") != "put":
                 continue
 
             exp = opt.get("expiration_date")
 
+            if not exp:
+                continue
+
+            # tolérance date (important)
             try:
                 opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
             except:
                 continue
 
-            # tolérance date
             if abs((opt_date - selected_date).days) > 2:
                 continue
 
@@ -113,67 +99,41 @@ if run_scan:
             if strike >= price:
                 continue
 
+            # 🎯 distance = proxy delta
             distance = (price - strike) / price
 
-            # 🔥 ZONE DELTA CIBLE
-            if distance < 0.03 or distance > 0.12:
-                continue
+            # 🔥 ZONE DELTA approx (-0.20 à -0.30)
+            if 0.03 <= distance <= 0.10:
 
-            filtered.append(opt)
-
-        # 🔥 tri par proximité logique
-        filtered.sort(key=lambda x: abs(price - x.get("strike_price")))
-
-        # 🔥 limiter pour performance
-        candidates = filtered[:20]
-
-        # 🎯 SNAPSHOT UNIQUEMENT ICI
-        for opt in candidates:
-
-            snapshot = get_snapshot(opt.get("ticker"))
-            if not snapshot:
-                continue
-
-            delta = snapshot.get("delta")
-
-            if delta is None:
-                continue
-
-            if not (target_min <= delta <= target_max):
-                continue
-
-            bid = snapshot.get("bid", 0)
-            ask = snapshot.get("ask", 0)
-            volume = snapshot.get("volume", 0)
-
-            results.append({
-                "Ticker": ticker,
-                "Price": round(price, 2),
-                "Strike": opt.get("strike_price"),
-                "Delta": round(delta, 2),
-                "Bid": bid,
-                "Ask": ask,
-                "Volume": volume,
-                "Expiration": opt.get("expiration_date")
-            })
+                results.append({
+                    "Ticker": ticker,
+                    "Price": round(price, 2),
+                    "Strike": strike,
+                    "Distance %": round(distance * 100, 2),
+                    "Expiration": exp
+                })
 
         progress.progress((i + 1) / len(tickers[:50]))
 
     df = pd.DataFrame(results)
 
     if not df.empty:
-        st.subheader("🔥 Options delta -0.20 à -0.30")
+
+        df = df.sort_values(["Ticker", "Strike"])
+
+        st.subheader("🔥 Options dans la zone delta (-0.20 à -0.30 approx)")
         st.dataframe(df, use_container_width=True)
 
+        # regroupé par stock
         st.subheader("📌 Par stock")
         for ticker in df["Ticker"].unique():
             st.markdown(f"### {ticker}")
             st.dataframe(df[df["Ticker"] == ticker], use_container_width=True)
 
     else:
-        st.warning("⚠️ Aucun résultat — essaie autre date ou élargir zone")
+        st.error("⚠️ Aucun résultat — change la date (vendredi)")
 
     st.caption(f"Options trouvées: {len(df)}")
 
 else:
-    st.info("👉 Clique sur Calculer")
+    st.info("👉 Choisis une date puis clique sur Calculer")
