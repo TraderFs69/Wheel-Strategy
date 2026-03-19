@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (HYBRID PRO FINAL)")
+st.title("🔥 TEA - Wheel Scanner (FINAL FIXED)")
 
 # -------------------------
 # INPUT
@@ -62,7 +62,7 @@ def get_options(ticker):
         return []
 
 # -------------------------
-# BUILD OPTION SYMBOL
+# BUILD SYMBOL
 # -------------------------
 def build_option_symbol(ticker, expiration, strike):
     try:
@@ -77,7 +77,7 @@ def build_option_symbol(ticker, expiration, strike):
         return None
 
 # -------------------------
-# SNAPSHOT
+# SNAPSHOT SAFE
 # -------------------------
 def get_option_snapshot(symbol):
     try:
@@ -141,7 +141,11 @@ if run_scan:
             if not symbol:
                 continue
 
-            snap = get_option_snapshot(symbol)
+            # 💣 FIX CRASH ICI
+            snap = get_option_snapshot(symbol) or {}
+
+            if not isinstance(snap, dict):
+                snap = {}
 
             time.sleep(0.15)
 
