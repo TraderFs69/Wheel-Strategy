@@ -3,57 +3,51 @@ import pandas as pd
 import requests
 from datetime import datetime
 from massive import RESTClient
+import time
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
-st.title("🔥 TEA - AAPL Wheel (REST API PRO)")
+st.title("🔥 TEA - Wheel Scanner (Multi-Tickers REST)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("Lancer")
 
-# -------------------------
-# CLOSE PRICE (EOD)
-# -------------------------
-def get_close_price():
-    try:
-        data = client.get_previous_close_agg("AAPL")
+# 🔥 LISTE TICKERS (modifiable)
+tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
+# -------------------------
+# CLOSE PRICE
+# -------------------------
+def get_close_price(ticker):
+    try:
+        data = client.get_previous_close_agg(ticker)
         if not data or len(data) == 0:
             return None
-
         return data[0].close
-
-    except Exception as e:
-        st.write(f"Erreur prix: {e}")
+    except:
         return None
 
 # -------------------------
-# OPTIONS LIST
+# OPTIONS
 # -------------------------
-def get_options():
+def get_options(ticker):
     try:
         return list(client.list_options_contracts(
-            underlying_ticker="AAPL",
+            underlying_ticker=ticker,
             limit=1000
         ))
-    except Exception as e:
-        st.write(f"Erreur options: {e}")
+    except:
         return []
 
 # -------------------------
-# SNAPSHOT REST (KEY PART)
+# SNAPSHOT REST
 # -------------------------
-def get_snapshot_rest(symbol):
+def get_snapshot(ticker, symbol):
     try:
-        url = f"https://api.polygon.io/v3/snapshot/options/AAPL/{symbol}?apiKey={API_KEY}"
+        url = f"https://api.polygon.io/v3/snapshot/options/{ticker}/{symbol}?apiKey={API_KEY}"
         res = requests.get(url).json()
-
-        if "results" not in res:
-            return None
-
-        return res["results"]
-
+        return res.get("results", None)
     except:
         return None
 
@@ -62,84 +56,89 @@ def get_snapshot_rest(symbol):
 # -------------------------
 if run:
 
-    price = get_close_price()
-
-    if price is None:
-        st.error("❌ Impossible de récupérer le close AAPL")
-        st.stop()
-
-    st.success(f"Close AAPL: {round(price, 2)}")
-
-    options = get_options()
-
     results = []
 
-    for opt in options:
+    for ticker in tickers:
 
-        if opt.contract_type != "put":
+        st.subheader(f"Scan {ticker}")
+
+        price = get_close_price(ticker)
+
+        if price is None:
+            st.write(f"❌ Prix indisponible {ticker}")
             continue
 
-        exp = opt.expiration_date
-        opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
+        options = get_options(ticker)
 
-        # 🎯 date exacte
-        if opt_date != selected_date:
-            continue
+        for opt in options:
 
-        strike = opt.strike_price
+            if opt.contract_type != "put":
+                continue
 
-        # 🎯 distance 3% à 8%
-        distance = (price - strike) / price
+            exp = opt.expiration_date
+            opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
 
-        if not (0.03 <= distance <= 0.08):
-            continue
+            if opt_date != selected_date:
+                continue
 
-        symbol = opt.ticker
+            strike = opt.strike_price
 
-        data = get_snapshot_rest(symbol)
+            # 🔥 PRÉ-FILTRE AVANT API (CRUCIAL)
+            distance = (price - strike) / price
+            if not (0.03 <= distance <= 0.08):
+                continue
 
-        if data is None:
-            continue
+            symbol = opt.ticker
 
-        # -------------------------
-        # EXTRACTION EXACTE
-        # -------------------------
-        day = data.get("day", {})
-        greeks = data.get("greeks", {})
+            data = get_snapshot(ticker, symbol)
 
-        bid = None  # REST snapshot ne donne pas toujours bid/ask
-        ask = None
+            time.sleep(0.02)  # 🔥 éviter rate limit
 
-        premium = day.get("close", None)
+            if data is None:
+                continue
 
-        delta = greeks.get("delta", None)
-        theta = greeks.get("theta", None)
-        vega = greeks.get("vega", None)
+            day = data.get("day", {})
+            greeks = data.get("greeks", {})
 
-        # 🔥 DEBUG (match navigateur)
-        st.write({
-            "symbol": symbol,
-            "strike": strike,
-            "premium": premium,
-            "delta": delta
-        })
+            premium = day.get("close", None)
+            delta = greeks.get("delta", None)
 
-        if premium is None or delta is None:
-            continue
+            if premium is None or delta is None:
+                continue
 
-        results.append({
-            "Strike": strike,
-            "Distance %": round(distance * 100, 2),
-            "Premium": premium,
-            "Delta": round(delta, 3),
-            "Theta": round(theta, 3) if theta else None,
-            "Vega": round(vega, 3) if vega else None,
-            "Symbol": symbol
-        })
+            # -------------------------
+            # METRICS
+            # -------------------------
+            return_pct = premium / strike * 100
+
+            dte = (opt_date - datetime.today().date()).days
+            if dte <= 0:
+                continue
+
+            annual_return = return_pct * (365 / dte)
+            score = annual_return * abs(delta)
+
+            results.append({
+                "Ticker": ticker,
+                "Strike": strike,
+                "Distance %": round(distance * 100, 2),
+                "Premium": premium,
+                "Delta": round(delta, 3),
+                "Return %": round(return_pct, 2),
+                "Annual %": round(annual_return, 2),
+                "Score": round(score, 2),
+                "DTE": dte
+            })
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat")
+        st.error("⚠️ Aucun trade trouvé")
     else:
-        st.dataframe(df.sort_values("Strike"))
+        df = df.sort_values("Score", ascending=False)
+
+        st.subheader("🔥 TOP TRADES")
+        st.dataframe(df, use_container_width=True)
+
+        st.subheader("🏆 Top 10")
+        st.write(df.head(10))
