@@ -6,35 +6,29 @@ from massive import RESTClient
 API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
-st.title("🔥 TEA - AAPL Wheel Debug (Stable)")
+st.title("🔥 TEA - AAPL Wheel (EOD)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("Lancer")
 
 # -------------------------
-# GET UNDERLYING PRICE (FIX)
+# PRIX CLOSE (EOD)
 # -------------------------
-def get_underlying_price():
+def get_close_price():
     try:
-        quote = client.get_last_quote("AAPL")
+        data = client.get_previous_close_agg("AAPL")
 
-        # 🔥 mid price (comme Google)
-        if quote and quote.bid is not None and quote.ask is not None:
-            return (quote.bid + quote.ask) / 2
+        if not data or len(data) == 0:
+            return None
 
-        # fallback
-        trade = client.get_last_trade("AAPL")
-        if trade and hasattr(trade, "price"):
-            return trade.price
-
-        return None
+        return data[0].close  # 🔥 FIX IMPORTANT
 
     except Exception as e:
         st.write(f"Erreur prix: {e}")
         return None
 
 # -------------------------
-# GET OPTIONS
+# OPTIONS
 # -------------------------
 def get_options():
     try:
@@ -51,13 +45,13 @@ def get_options():
 # -------------------------
 if run:
 
-    price = get_underlying_price()
+    price = get_close_price()
 
     if price is None:
-        st.error("❌ Impossible de récupérer le prix AAPL")
+        st.error("❌ Impossible de récupérer le close AAPL")
         st.stop()
 
-    st.success(f"Prix AAPL: {round(price, 2)}")
+    st.success(f"Close AAPL: {round(price, 2)}")
 
     options = get_options()
 
@@ -81,10 +75,10 @@ if run:
 
         strike = opt.strike_price
 
-        # 🎯 distance 3% à 10%
+        # 🔥 DISTANCE 3% à 8% (comme tu veux)
         distance = (price - strike) / price
 
-        if not (0.03 <= distance <= 0.10):
+        if not (0.03 <= distance <= 0.08):
             continue
 
         symbol = opt.ticker
@@ -121,6 +115,6 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat (mais le code fonctionne)")
+        st.error("⚠️ Aucun résultat (date ou strikes trop restrictifs)")
     else:
         st.dataframe(df.sort_values("Strike"))
