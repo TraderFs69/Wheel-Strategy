@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner PRO FINAL (STABLE)")
+st.title("🔥 TEA - Wheel Scanner PRO FINAL (FIX SNAPSHOT)")
 
 # -------------------------
 # INPUT
@@ -69,6 +69,7 @@ def get_snapshot(symbol):
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
         res = r.get("results", {})
+
         greeks = res.get("greeks", {}) or {}
 
         return {
@@ -119,7 +120,7 @@ if run_scan:
             if not strike or strike >= price:
                 continue
 
-            # 🎯 DISTANCE (filtre principal)
+            # 🎯 DISTANCE
             distance = (price - strike) / price
             if not (0.02 <= distance <= 0.15):
                 continue
@@ -135,22 +136,32 @@ if run_scan:
             # 🎯 DELTA INTERNE
             delta_calc = put_delta(price, strike, T, risk_free_rate, 0.30)
 
-            # 🔥 SNAPSHOT
+            # 🔥 SNAPSHOT (AVEC FALLBACK)
             snap = get_snapshot(opt.get("ticker"))
-            if not snap:
-                continue
 
-            iv = snap["iv"] if snap["iv"] else 0.30
+            if snap:
+                iv = snap["iv"] if snap["iv"] else 0.30
+                delta_real = snap["delta_real"]
+                theta = snap["theta"]
+                vega = snap["vega"]
+            else:
+                iv = 0.30
+                delta_real = None
+                theta = None
+                vega = None
 
             # 💰 PRICING
             premium = put_price_bs(price, strike, T, risk_free_rate, iv)
+
+            if premium <= 0:
+                continue
 
             annual_return = (premium / strike) * (365 / dte)
 
             # 💣 SCORE
             delta_score = 1 - abs(abs(delta_calc) - 0.25)
             iv_score = iv
-            theta_score = abs(snap["theta"]) if snap["theta"] else 0
+            theta_score = abs(theta) if theta else 0
 
             score = (
                 annual_return * 0.5 +
@@ -165,9 +176,9 @@ if run_scan:
                 "Strike": strike,
                 "Distance %": round(distance * 100, 2),
                 "Delta calc": round(delta_calc, 3),
-                "Delta réel": snap["delta_real"],
-                "Theta": snap["theta"],
-                "Vega": snap["vega"],
+                "Delta réel": delta_real,
+                "Theta": theta,
+                "Vega": vega,
                 "IV": round(iv * 100, 1),
                 "Premium": round(premium, 2),
                 "Premium/Strike %": round(premium / strike * 100, 2),
@@ -175,35 +186,33 @@ if run_scan:
                 "Score": round(score, 3)
             })
 
-            time.sleep(0.01)
+            time.sleep(0.005)
 
         progress.progress((i + 1) / len(tickers))
 
     # -------------------------
     # DEBUG
     # -------------------------
-    st.write("🔎 Candidats trouvés (avant enrichissement):", total_candidates)
-    st.write("📊 Trades finaux:", len(results))
+    st.write("🔎 Candidats:", total_candidates)
+    st.write("📊 Trades générés:", len(results))
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat — marché ou filtres")
+        st.error("⚠️ Aucun résultat — vérifier marché")
         st.stop()
 
-    # -------------------------
-    # FILTRE FINAL DELTA
-    # -------------------------
-    df = df[
+    # 🎯 FILTRE FINAL DELTA
+    df_filtered = df[
         (df["Delta calc"] <= -0.20) &
         (df["Delta calc"] >= -0.30)
     ]
 
-    if df.empty:
-        st.warning("⚠️ Aucun trade dans la zone delta stricte → affichage élargi")
-        df = pd.DataFrame(results)
+    if df_filtered.empty:
+        st.warning("⚠️ Aucun trade strict → affichage élargi")
+        df_filtered = df
 
-    df = df.sort_values("Score", ascending=False)
+    df_filtered = df_filtered.sort_values("Score", ascending=False)
 
     # -------------------------
     # DISPLAY
@@ -212,11 +221,11 @@ if run_scan:
 
     with col1:
         st.subheader("🔥 Wheel Trades")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df_filtered, use_container_width=True)
 
     with col2:
         st.subheader("🏆 TOP 10")
-        st.write(df.head(10))
+        st.write(df_filtered.head(10))
 
 else:
     st.info("👉 Clique sur Lancer le scan")
