@@ -6,11 +6,18 @@ from datetime import datetime
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
-st.title("🔥 TEA - Wheel Scanner (WORKING 100%)")
+st.set_page_config(layout="wide")
+st.title("🔥 TEA - Wheel Scanner (Date Fix)")
 
+# -------------------------
+# INPUT
+# -------------------------
 selected_date = st.sidebar.date_input("Expiration")
 run_scan = st.sidebar.button("🚀 Lancer")
 
+# -------------------------
+# STOCKS TEST
+# -------------------------
 tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
 # -------------------------
@@ -71,7 +78,8 @@ if run_scan:
             except:
                 continue
 
-            if abs((opt_date - selected_date).days) > 5:
+            # 💣 FILTRE EXACT DATE (FIX)
+            if opt_date != selected_date:
                 continue
 
             strike = opt.get("strike_price")
@@ -81,7 +89,7 @@ if run_scan:
 
             distance = (price - strike) / price
 
-            # 🔥 élargi pour forcer résultats
+            # zone wheel réaliste
             if not (0.01 <= distance <= 0.15):
                 continue
 
@@ -91,13 +99,15 @@ if run_scan:
 
             T = dte / 365
 
+            # greeks calculés
             delta, theta, vega = greeks_put(price, strike, T, 0.04, 0.30)
 
-            # 💣 PREMIUM APPROX (toujours >0)
+            # premium approx stable
             premium = abs(price - strike) * 0.03
 
             results.append({
                 "Ticker": ticker,
+                "Expiration": exp,  # 🔥 AJOUT IMPORTANT
                 "Strike": strike,
                 "Price": price,
                 "Delta": round(delta, 3),
@@ -111,7 +121,7 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé (vraiment étrange)")
+        st.error("⚠️ Aucun trade trouvé")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
@@ -120,3 +130,9 @@ if run_scan:
 
         st.subheader("🏆 Top 10")
         st.write(df.head(10))
+
+        # 🔥 DEBUG UTILE
+        st.write("Dates trouvées :", df["Expiration"].unique())
+
+else:
+    st.info("👉 Clique sur Lancer le scan")
