@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner EXECUTION PRO")
+st.title("🔥 TEA - Wheel Scanner SMART")
 
 # -------------------------
 # USER INPUT
@@ -20,10 +20,10 @@ week_choice = st.sidebar.selectbox(
     ["Prochain vendredi", "2e vendredi", "3e vendredi"]
 )
 
-min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 5)
+min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 0)
 
 # -------------------------
-# CALCUL VENDREDI
+# DATE
 # -------------------------
 def get_target_friday(n):
     today = datetime.today()
@@ -39,35 +39,21 @@ week_map = {
 target_date = get_target_friday(week_map[week_choice]).date()
 
 # -------------------------
-# LOAD TICKERS
+# DATA
 # -------------------------
 @st.cache_data
 def load_sp500():
     url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
-    df = pd.read_csv(url)
-    return df["Symbol"].tolist()
+    return pd.read_csv(url)["Symbol"].tolist()
 
 tickers = load_sp500()
 
-# -------------------------
-# DATA FUNCTIONS
-# -------------------------
+
 @st.cache_data(ttl=300)
 def get_price(ticker):
     try:
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r["results"][0]["c"]
-    except:
-        return None
-
-
-@st.cache_data(ttl=300)
-def get_history(ticker):
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/200/{datetime.today().strftime('%Y-%m-%d')}?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return pd.DataFrame(r["results"])
+        return requests.get(url).json()["results"][0]["c"]
     except:
         return None
 
@@ -76,8 +62,7 @@ def get_history(ticker):
 def get_options(ticker):
     try:
         url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r.get("results", [])
+        return requests.get(url).json().get("results", [])
     except:
         return []
 
@@ -101,7 +86,6 @@ def get_snapshot(symbol):
 
         return {
             "delta": greeks.get("delta"),
-            "theta": greeks.get("theta"),
             "iv": res.get("implied_volatility"),
             "bid": bid,
             "ask": ask,
@@ -109,29 +93,6 @@ def get_snapshot(symbol):
         }
     except:
         return None
-
-
-# -------------------------
-# STOCK SCORE
-# -------------------------
-def stock_score(df):
-    if df is None or len(df) < 200:
-        return 0
-
-    df["ema50"] = df["c"].ewm(span=50).mean()
-    df["ema200"] = df["c"].ewm(span=200).mean()
-
-    price = df["c"].iloc[-1]
-    ema50 = df["ema50"].iloc[-1]
-    ema200 = df["ema200"].iloc[-1]
-
-    score = 0
-    if price > ema50:
-        score += 0.5
-    if ema50 > ema200:
-        score += 0.5
-
-    return score
 
 
 # -------------------------
@@ -144,9 +105,6 @@ for ticker in tickers[:100]:
     price = get_price(ticker)
     if not price:
         continue
-
-    hist = get_history(ticker)
-    s_score = stock_score(hist)
 
     options = get_options(ticker)
 
@@ -163,14 +121,17 @@ for ticker in tickers[:100]:
 
         exp_date = datetime.strptime(expiration, "%Y-%m-%d").date()
 
-        if abs((exp_date - target_date).days) > 2:
+        # 🔥 expiration flexible
+        if abs((exp_date - target_date).days) > 5:
             continue
 
+        # 🔥 zone wheel élargie
         distance = (price - strike) / price
-        if distance < 0.01 or distance > 0.12:
+        if distance < 0.005 or distance > 0.20:
             continue
 
         snapshot = get_snapshot(opt.get("ticker"))
+
         if not snapshot:
             continue
 
@@ -180,27 +141,21 @@ for ticker in tickers[:100]:
         volume = snapshot.get("volume", 0)
         iv = snapshot.get("iv", 0.30)
 
-        if delta is None or bid <= 0:
+        if delta is None:
             continue
 
-        spread = ask - bid
-        premium = (bid + ask) / 2
-
-        # 🎯 EXECUTION QUALITY SCORE
+        # 🔥 EXECUTION SCORE (pas filtre)
         quality = 0
 
         if bid > 0:
             quality += 1
-        if volume > 5:
+        if volume > 0:
             quality += 1
-        if spread < bid:
+        if ask > 0:
             quality += 1
 
-        if quality < 2:
-            continue
-
-        if not (target_delta - 0.10 <= abs(delta) <= target_delta + 0.10):
-            continue
+        # premium réaliste
+        premium = (bid + ask) / 2 if bid and ask else bid or 0.01
 
         oi = opt.get("open_interest", 0)
         if oi < min_oi:
@@ -211,12 +166,12 @@ for ticker in tickers[:100]:
         annual_return = (premium / strike) * (365 / max(dte, 1))
         pop = 1 - abs(delta)
 
+        # 🔥 SCORE FINAL (intelligent)
         score = (
             annual_return * 0.3 +
             pop * 0.2 +
-            s_score * 0.3 +
             iv * 0.2 +
-            quality * 0.2
+            quality * 0.3
         )
 
         results.append({
@@ -226,7 +181,6 @@ for ticker in tickers[:100]:
             "Premium": round(premium,2),
             "Bid": bid,
             "Ask": ask,
-            "Spread": round(spread,2),
             "Delta": round(delta,2),
             "POP": round(pop*100,1),
             "Volume": volume,
@@ -244,13 +198,13 @@ df = pd.DataFrame(results)
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
-    st.subheader("🔥 Trades Wheel exécutables")
+    st.subheader("🔥 Opportunités Wheel (SMART)")
     st.dataframe(df, use_container_width=True)
 
-    st.subheader("🏆 Top 5")
-    st.write(df.head(5))
+    st.subheader("🏆 Top 10")
+    st.write(df.head(10))
 
 else:
-    st.warning("⚠️ Aucun trade trouvé — conditions marché faibles")
+    st.warning("⚠️ Aucun résultat — improbable (vérifie API)")
 
 st.caption(f"Trades trouvés: {len(results)}")
