@@ -6,19 +6,31 @@ from massive import RESTClient
 API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
-st.title("🔥 TEA - AAPL Wheel Debug")
+st.title("🔥 TEA - AAPL Wheel Debug (Stable)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("Lancer")
 
 # -------------------------
-# GET UNDERLYING PRICE (FIABLE)
+# GET UNDERLYING PRICE (FIX)
 # -------------------------
 def get_underlying_price():
     try:
+        quote = client.get_last_quote("AAPL")
+
+        # 🔥 mid price (comme Google)
+        if quote and quote.bid is not None and quote.ask is not None:
+            return (quote.bid + quote.ask) / 2
+
+        # fallback
         trade = client.get_last_trade("AAPL")
-        return trade.price
-    except:
+        if trade and hasattr(trade, "price"):
+            return trade.price
+
+        return None
+
+    except Exception as e:
+        st.write(f"Erreur prix: {e}")
         return None
 
 # -------------------------
@@ -30,7 +42,8 @@ def get_options():
             underlying_ticker="AAPL",
             limit=1000
         ))
-    except:
+    except Exception as e:
+        st.write(f"Erreur options: {e}")
         return []
 
 # -------------------------
@@ -41,12 +54,16 @@ if run:
     price = get_underlying_price()
 
     if price is None:
-        st.error("Erreur prix AAPL")
+        st.error("❌ Impossible de récupérer le prix AAPL")
         st.stop()
 
-    st.write(f"Prix AAPL: {price}")
+    st.success(f"Prix AAPL: {round(price, 2)}")
 
     options = get_options()
+
+    if not options:
+        st.error("❌ Aucune option retournée")
+        st.stop()
 
     results = []
 
@@ -58,13 +75,13 @@ if run:
         exp = opt.expiration_date
         opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
 
-        # 🔥 date EXACTE (comme tu veux)
+        # 🎯 date exacte
         if opt_date != selected_date:
             continue
 
         strike = opt.strike_price
 
-        # 🔥 DISTANCE 3% à 10%
+        # 🎯 distance 3% à 10%
         distance = (price - strike) / price
 
         if not (0.03 <= distance <= 0.10):
@@ -104,6 +121,6 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat")
+        st.error("⚠️ Aucun résultat (mais le code fonctionne)")
     else:
         st.dataframe(df.sort_values("Strike"))
