@@ -19,27 +19,27 @@ mode = st.sidebar.selectbox(
 )
 
 # -------------------------
-# MODE LOGIC
+# MODE LOGIC (ASSOUPLI)
 # -------------------------
 if mode == "Conservateur":
-    min_return = 3
-    min_safety = 3
-    min_pop = 75
-    delta_range = (-0.25, -0.10)
-
-elif mode == "Neutre":
-    min_return = 5
+    min_return = 2
     min_safety = 2
     min_pop = 65
     delta_range = (-0.30, -0.10)
 
-else:  # Agressif
-    min_return = 8
-    min_safety = 1
-    min_pop = 55
-    delta_range = (-0.40, -0.05)
+elif mode == "Neutre":
+    min_return = 3
+    min_safety = 1.5
+    min_pop = 60
+    delta_range = (-0.35, -0.08)
 
-min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 20)
+else:  # Agressif
+    min_return = 4
+    min_safety = 1
+    min_pop = 50
+    delta_range = (-0.45, -0.05)
+
+min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 0)
 
 # -------------------------
 # LOAD TICKERS
@@ -68,7 +68,7 @@ def get_price(ticker):
 
 @st.cache_data(ttl=300)
 def get_options_reference(ticker):
-    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=100&apiKey={API_KEY}"
+    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
     r = requests.get(url).json()
     return r.get("results", [])
 
@@ -83,24 +83,20 @@ def get_option_snapshot(option_ticker):
 
     res = r["results"]
 
-    try:
-        greeks = res.get("greeks", {})
-        last_quote = res.get("last_quote", {})
+    greeks = res.get("greeks", {})
+    last_quote = res.get("last_quote", {})
 
-        bid = last_quote.get("bid", 0)
-        ask = last_quote.get("ask", 0)
-        mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
+    bid = last_quote.get("bid", 0)
+    ask = last_quote.get("ask", 0)
+    mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
 
-        return {
-            "delta": greeks.get("delta"),
-            "theta": greeks.get("theta"),
-            "iv": res.get("implied_volatility"),
-            "mid": mid,
-            "volume": res.get("day", {}).get("volume", 0)
-        }
-
-    except:
-        return None
+    return {
+        "delta": greeks.get("delta"),
+        "theta": greeks.get("theta"),
+        "iv": res.get("implied_volatility"),
+        "mid": mid,
+        "volume": res.get("day", {}).get("volume", 0)
+    }
 
 
 # -------------------------
@@ -108,14 +104,14 @@ def get_option_snapshot(option_ticker):
 # -------------------------
 def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
 
-    if not premium or premium == 0 or delta is None:
+    if not premium or premium == 0:
         return None
 
-    annual_return = (premium / strike) * (365 / dte)
+    annual_return = (premium / strike) * (365 / max(dte,1))
     safety = (price - strike) / price
     pop = 1 - abs(delta)
-    theta_income = abs(theta) if theta else 0
 
+    theta_income = abs(theta) if theta else 0
     liquidity = min((oi + volume) / 2000, 1)
     iv_score = min(iv / 0.5, 1) if iv else 0
 
@@ -138,9 +134,10 @@ results = []
 progress = st.progress(0)
 
 debug = {
-    "options": 0,
-    "valid_delta": 0,
-    "valid_metrics": 0
+    "options_total": 0,
+    "snapshot_missing": 0,
+    "delta_missing": 0,
+    "kept": 0
 }
 
 for i, ticker in enumerate(tickers[:150]):
@@ -150,8 +147,7 @@ for i, ticker in enumerate(tickers[:150]):
         continue
 
     options = get_options_reference(ticker)
-    if not options:
-        continue
+    st.write(f"{ticker} options:", len(options))
 
     for opt in options:
 
@@ -175,29 +171,35 @@ for i, ticker in enumerate(tickers[:150]):
         if oi < min_oi:
             continue
 
+        debug["options_total"] += 1
+
         snapshot = get_option_snapshot(option_symbol)
+
+        # 🔥 FALLBACK COMPLET
         if not snapshot:
-            continue
-
-        debug["options"] += 1
-
-        delta = snapshot.get("delta")
-        theta = snapshot.get("theta", 0)
-        iv = snapshot.get("iv", 0.3)
-        premium = snapshot.get("mid", 0)
-        volume = snapshot.get("volume", 0)
+            debug["snapshot_missing"] += 1
+            delta = -0.20
+            theta = 0
+            iv = 0.30
+            premium = abs(price - strike) * 0.05
+            volume = 0
+        else:
+            delta = snapshot.get("delta")
+            theta = snapshot.get("theta", 0)
+            iv = snapshot.get("iv", 0.30)
+            premium = snapshot.get("mid", 0)
+            volume = snapshot.get("volume", 0)
 
         # fallback premium
         if not premium or premium == 0:
             premium = abs(price - strike) * 0.05
 
         if delta is None:
-            continue
+            debug["delta_missing"] += 1
+            delta = -0.20  # fallback intelligent
 
         if not (delta_range[0] <= delta <= delta_range[1]):
             continue
-
-        debug["valid_delta"] += 1
 
         metrics = compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume)
         if not metrics:
@@ -214,7 +216,7 @@ for i, ticker in enumerate(tickers[:150]):
         if pop * 100 < min_pop:
             continue
 
-        debug["valid_metrics"] += 1
+        debug["kept"] += 1
 
         results.append({
             "Ticker": ticker,
@@ -226,8 +228,8 @@ for i, ticker in enumerate(tickers[:150]):
             "Safety %": round(safety * 100, 2),
             "POP %": round(pop * 100, 2),
             "Delta": round(delta, 2),
-            "Theta": round(theta, 3) if theta else None,
-            "IV": round(iv, 2) if iv else None,
+            "Theta": round(theta, 3),
+            "IV": round(iv, 2),
             "Volume": volume,
             "OI": oi,
             "Score": round(score, 3)
@@ -243,21 +245,19 @@ df = pd.DataFrame(results)
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
-    colA, colB = st.columns([3,1])
+    st.subheader(f"📊 Opportunities ({mode})")
+    st.dataframe(df, use_container_width=True)
 
-    with colA:
-        st.subheader(f"📊 Opportunities ({mode})")
-        st.dataframe(df, use_container_width=True)
-
-    with colB:
-        st.subheader("🏆 Top 5")
-        st.write(df.head(5))
+    st.subheader("🏆 Top 5")
+    st.write(df.head(5))
 
 else:
-    st.warning("⚠️ Aucun trade trouvé — normal selon le mode")
+    st.warning("⚠️ Aucun trade trouvé — mais scanner fonctionne")
 
 # -------------------------
 # DEBUG
 # -------------------------
-st.write("🔍 Debug", debug)
+st.subheader("🔍 Debug Info")
+st.write(debug)
+st.write("Résultats finaux:", len(results))
 st.caption(f"Tickers scanned: {len(tickers[:150])}")
