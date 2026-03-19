@@ -8,13 +8,31 @@ import time
 API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
-st.title("🔥 TEA - Wheel Scanner SP500 (PRO)")
+st.set_page_config(layout="wide")
 
-selected_date = st.date_input("Expiration")
-run = st.button("Lancer")
+st.title("🔥 TEA - Wheel Scanner PRO")
+
+# 🔥 MÉMO IMPORTANT
+st.warning("⚠️ À utiliser APRÈS la fermeture du marché (16h+) pour des données fiables")
 
 # -------------------------
-# 🔥 SP500 LIST (simple)
+# PARAMÈTRES UI
+# -------------------------
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    selected_date = st.date_input("Expiration")
+
+with col2:
+    max_tickers = st.slider("Nombre de tickers", 20, 200, 80)
+
+with col3:
+    min_oi = st.slider("Open Interest min", 0, 2000, 500)
+
+run = st.button("🚀 Lancer le scan")
+
+# -------------------------
+# SP500
 # -------------------------
 @st.cache_data
 def get_sp500():
@@ -22,28 +40,28 @@ def get_sp500():
     df = pd.read_csv(url)
     return df["Symbol"].tolist()
 
-tickers = get_sp500()
+tickers = get_sp500()[:max_tickers]
 
 # -------------------------
 # CLOSE PRICE
 # -------------------------
+@st.cache_data(ttl=3600)
 def get_close_price(ticker):
     try:
         data = client.get_previous_close_agg(ticker)
-        if not data or len(data) == 0:
-            return None
-        return data[0].close
+        return data[0].close if data else None
     except:
         return None
 
 # -------------------------
 # OPTIONS
 # -------------------------
+@st.cache_data(ttl=3600)
 def get_options(ticker):
     try:
         return list(client.list_options_contracts(
             underlying_ticker=ticker,
-            limit=500  # 🔥 réduit pour vitesse
+            limit=300
         ))
     except:
         return []
@@ -51,6 +69,7 @@ def get_options(ticker):
 # -------------------------
 # SNAPSHOT REST
 # -------------------------
+@st.cache_data(ttl=600)
 def get_snapshot(ticker, symbol):
     try:
         url = f"https://api.polygon.io/v3/snapshot/options/{ticker}/{symbol}?apiKey={API_KEY}"
@@ -64,21 +83,16 @@ def get_snapshot(ticker, symbol):
 # -------------------------
 if run:
 
+    progress = st.progress(0)
     results = []
 
-    # 🔥 LIMITER POUR TEST
-    tickers_sample = tickers[:50]  # 👉 augmente progressivement
+    for i, ticker in enumerate(tickers):
 
-    for ticker in tickers_sample:
+        progress.progress((i + 1) / len(tickers))
 
         price = get_close_price(ticker)
 
-        if price is None or price < 5:
-            continue
-
-        # 🔥 PRÉ-FILTRE (important)
-        # élimine penny / junk
-        if price < 20:
+        if price is None or price < 20:
             continue
 
         options = get_options(ticker)
@@ -96,7 +110,7 @@ if run:
 
             strike = opt.strike_price
 
-            # 🔥 PRÉ-FILTRE CRITIQUE (AVANT API)
+            # 🔥 distance wheel
             distance = (price - strike) / price
             if not (0.03 <= distance <= 0.08):
                 continue
@@ -104,38 +118,42 @@ if run:
             symbol = opt.ticker
 
             data = get_snapshot(ticker, symbol)
-
-            time.sleep(0.01)
-
             if data is None:
                 continue
 
             day = data.get("day", {})
             greeks = data.get("greeks", {})
+            quote = data.get("last_quote", {})
 
-            premium = day.get("close", None)
-            delta = greeks.get("delta", None)
+            # 🔥 PRIX
+            premium = day.get("close")
+            bid = quote.get("bid")
+            ask = quote.get("ask")
+
+            mid = None
+            if bid is not None and ask is not None:
+                mid = (bid + ask) / 2
+
+            # 🔥 GREEKS
+            delta = greeks.get("delta")
             oi = data.get("open_interest", 0)
 
-            if premium is None or delta is None:
+            if premium is None or delta is None or bid is None:
                 continue
 
-            # 🔥 FILTRES PRO
+            # 🔥 FILTRES
             if not (-0.30 <= delta <= -0.10):
                 continue
 
-            if oi < 500:
+            if oi < min_oi:
                 continue
 
-            # -------------------------
-            # METRICS
-            # -------------------------
-            return_pct = premium / strike * 100
-
+            # 🔥 METRICS
             dte = (opt_date - datetime.today().date()).days
             if dte <= 0:
                 continue
 
+            return_pct = bid / strike * 100
             annual_return = return_pct * (365 / dte)
             score = annual_return * abs(delta)
 
@@ -144,9 +162,15 @@ if run:
                 "Strike": strike,
                 "Price": round(price, 2),
                 "Distance %": round(distance * 100, 2),
+
                 "Premium": premium,
+                "Bid": bid,
+                "Ask": ask,
+                "Mid": round(mid, 2) if mid else None,
+
                 "Delta": round(delta, 3),
                 "OI": oi,
+
                 "Return %": round(return_pct, 2),
                 "Annual %": round(annual_return, 2),
                 "Score": round(score, 2)
@@ -159,8 +183,46 @@ if run:
     else:
         df = df.sort_values("Score", ascending=False)
 
-        st.subheader("🔥 TOP WHEEL TRADES SP500")
-        st.dataframe(df, use_container_width=True)
+        # -------------------------
+        # 🎨 STYLE VISUEL
+        # -------------------------
+        def color_score(val):
+            if val > 20:
+                return "background-color: #00c853; color: white"
+            elif val > 10:
+                return "background-color: #ffd600"
+            else:
+                return ""
 
-        st.subheader("🏆 Top 10")
-        st.write(df.head(10))
+        def color_return(val):
+            if val > 1:
+                return "color: #00c853"
+            elif val < 0.3:
+                return "color: red"
+            return ""
+
+        styled_df = df.style\
+            .applymap(color_score, subset=["Score"])\
+            .applymap(color_return, subset=["Return %"])\
+            .format({
+                "Return %": "{:.2f}%",
+                "Annual %": "{:.2f}%"
+            })
+
+        st.subheader("🔥 TOP WHEEL TRADES")
+        st.dataframe(styled_df, use_container_width=True)
+
+        # -------------------------
+        # 🏆 TOP PICKS
+        # -------------------------
+        st.subheader("🏆 Top 10 Opportunités")
+
+        top10 = df.head(10)
+
+        for _, row in top10.iterrows():
+            st.markdown(f"""
+            **{row['Ticker']}** | Strike {row['Strike']}  
+            💰 Bid: {row['Bid']} | Premium: {row['Premium']}  
+            📊 Delta: {row['Delta']} | OI: {row['OI']}  
+            🚀 Return: {row['Return %']}% | Score: {row['Score']}
+            """)
