@@ -9,22 +9,37 @@ st.set_page_config(layout="wide")
 st.title("🔥 TEA - Wheel Scanner PRO MAX")
 
 # -------------------------
-# HEADER
+# MODE SELECTION
 # -------------------------
-col1, col2, col3 = st.columns(3)
-col1.metric("Mode", "Wheel PRO")
-col2.metric("Data", "Polygon + Greeks")
-col3.metric("Status", "Running")
+st.sidebar.header("🎯 Mode")
+
+mode = st.sidebar.selectbox(
+    "Choix du style",
+    ["Conservateur", "Neutre", "Agressif"]
+)
 
 # -------------------------
-# SIDEBAR FILTERS
+# MODE LOGIC
 # -------------------------
-st.sidebar.header("⚙️ Filters")
+if mode == "Conservateur":
+    min_return = 3
+    min_safety = 3
+    min_pop = 75
+    delta_range = (-0.25, -0.10)
 
-min_return = st.sidebar.slider("Min Annual Return %", 0, 50, 5)
-min_safety = st.sidebar.slider("Min Distance OTM %", 0, 15, 2)
-min_pop = st.sidebar.slider("Min POP %", 50, 95, 70)
-min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 50)
+elif mode == "Neutre":
+    min_return = 5
+    min_safety = 2
+    min_pop = 65
+    delta_range = (-0.30, -0.10)
+
+else:  # Agressif
+    min_return = 8
+    min_safety = 1
+    min_pop = 55
+    delta_range = (-0.40, -0.05)
+
+min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 20)
 
 # -------------------------
 # LOAD TICKERS
@@ -80,8 +95,6 @@ def get_option_snapshot(option_ticker):
             "delta": greeks.get("delta"),
             "theta": greeks.get("theta"),
             "iv": res.get("implied_volatility"),
-            "bid": bid,
-            "ask": ask,
             "mid": mid,
             "volume": res.get("day", {}).get("volume", 0)
         }
@@ -90,19 +103,8 @@ def get_option_snapshot(option_ticker):
         return None
 
 
-@st.cache_data(ttl=3600)
-def get_earnings_date(ticker):
-    url = f"https://api.polygon.io/v3/reference/tickers/{ticker}?apiKey={API_KEY}"
-    r = requests.get(url).json()
-
-    try:
-        return r["results"].get("earnings_date")
-    except:
-        return None
-
-
 # -------------------------
-# METRICS PRO
+# METRICS
 # -------------------------
 def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
 
@@ -111,7 +113,6 @@ def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
 
     annual_return = (premium / strike) * (365 / dte)
     safety = (price - strike) / price
-
     pop = 1 - abs(delta)
     theta_income = abs(theta) if theta else 0
 
@@ -134,16 +135,19 @@ def compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume):
 # MAIN SCAN
 # -------------------------
 results = []
-
 progress = st.progress(0)
 
-for i, ticker in enumerate(tickers[:100]):
+debug = {
+    "options": 0,
+    "valid_delta": 0,
+    "valid_metrics": 0
+}
+
+for i, ticker in enumerate(tickers[:150]):
 
     price = get_price(ticker)
     if not price:
         continue
-
-    earnings_date = get_earnings_date(ticker)
 
     options = get_options_reference(ticker)
     if not options:
@@ -167,12 +171,6 @@ for i, ticker in enumerate(tickers[:100]):
         if dte < 20 or dte > 60:
             continue
 
-        # 🚫 Earnings filter
-        if earnings_date:
-            earnings_dt = datetime.strptime(earnings_date, "%Y-%m-%d")
-            if datetime.today() < earnings_dt < expiration_dt:
-                continue
-
         oi = opt.get("open_interest", 0)
         if oi < min_oi:
             continue
@@ -181,14 +179,25 @@ for i, ticker in enumerate(tickers[:100]):
         if not snapshot:
             continue
 
-        delta = snapshot["delta"]
-        theta = snapshot["theta"]
-        iv = snapshot["iv"]
-        premium = snapshot["mid"]
-        volume = snapshot["volume"]
+        debug["options"] += 1
 
-        if delta is None or not (-0.30 <= delta <= -0.10):
+        delta = snapshot.get("delta")
+        theta = snapshot.get("theta", 0)
+        iv = snapshot.get("iv", 0.3)
+        premium = snapshot.get("mid", 0)
+        volume = snapshot.get("volume", 0)
+
+        # fallback premium
+        if not premium or premium == 0:
+            premium = abs(price - strike) * 0.05
+
+        if delta is None:
             continue
+
+        if not (delta_range[0] <= delta <= delta_range[1]):
+            continue
+
+        debug["valid_delta"] += 1
 
         metrics = compute_metrics(price, strike, premium, dte, oi, delta, theta, iv, volume)
         if not metrics:
@@ -204,6 +213,8 @@ for i, ticker in enumerate(tickers[:100]):
 
         if pop * 100 < min_pop:
             continue
+
+        debug["valid_metrics"] += 1
 
         results.append({
             "Ticker": ticker,
@@ -222,7 +233,7 @@ for i, ticker in enumerate(tickers[:100]):
             "Score": round(score, 3)
         })
 
-    progress.progress((i + 1) / len(tickers[:100]))
+    progress.progress((i + 1) / len(tickers[:150]))
 
 # -------------------------
 # DISPLAY
@@ -235,7 +246,7 @@ if not df.empty:
     colA, colB = st.columns([3,1])
 
     with colA:
-        st.subheader("📊 Wheel Opportunities PRO")
+        st.subheader(f"📊 Opportunities ({mode})")
         st.dataframe(df, use_container_width=True)
 
     with colB:
@@ -243,9 +254,10 @@ if not df.empty:
         st.write(df.head(5))
 
 else:
-    st.error("⚠️ No trades found — ajuste tes filtres")
+    st.warning("⚠️ Aucun trade trouvé — normal selon le mode")
 
 # -------------------------
 # DEBUG
 # -------------------------
-st.caption(f"Tickers scanned: {len(tickers[:100])}")
+st.write("🔍 Debug", debug)
+st.caption(f"Tickers scanned: {len(tickers[:150])}")
