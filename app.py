@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner EXECUTION READY")
+st.title("🔥 TEA - Wheel Scanner EXECUTION PRO")
 
 # -------------------------
 # USER INPUT
@@ -20,8 +20,7 @@ week_choice = st.sidebar.selectbox(
     ["Prochain vendredi", "2e vendredi", "3e vendredi"]
 )
 
-min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 10)
-min_volume = st.sidebar.slider("Min Volume", 0, 500, 5)
+min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 5)
 
 # -------------------------
 # CALCUL VENDREDI
@@ -99,13 +98,11 @@ def get_snapshot(symbol):
 
         bid = quote.get("bid", 0)
         ask = quote.get("ask", 0)
-        mid = (bid + ask) / 2 if bid and ask else bid or ask or 0
 
         return {
             "delta": greeks.get("delta"),
             "theta": greeks.get("theta"),
             "iv": res.get("implied_volatility"),
-            "mid": mid,
             "bid": bid,
             "ask": ask,
             "volume": res.get("day", {}).get("volume", 0) if isinstance(res.get("day"), dict) else 0
@@ -129,7 +126,6 @@ def stock_score(df):
     ema200 = df["ema200"].iloc[-1]
 
     score = 0
-
     if price > ema50:
         score += 0.5
     if ema50 > ema200:
@@ -184,20 +180,23 @@ for ticker in tickers[:100]:
         volume = snapshot.get("volume", 0)
         iv = snapshot.get("iv", 0.30)
 
-        # 🔥 EXECUTION FILTER
-        if bid <= 0:
-            continue
-
-        if volume < min_volume:
+        if delta is None or bid <= 0:
             continue
 
         spread = ask - bid
-        if spread > bid * 0.5:
-            continue
-
         premium = (bid + ask) / 2
 
-        if delta is None:
+        # 🎯 EXECUTION QUALITY SCORE
+        quality = 0
+
+        if bid > 0:
+            quality += 1
+        if volume > 5:
+            quality += 1
+        if spread < bid:
+            quality += 1
+
+        if quality < 2:
             continue
 
         if not (target_delta - 0.10 <= abs(delta) <= target_delta + 0.10):
@@ -216,7 +215,8 @@ for ticker in tickers[:100]:
             annual_return * 0.3 +
             pop * 0.2 +
             s_score * 0.3 +
-            iv * 0.2
+            iv * 0.2 +
+            quality * 0.2
         )
 
         results.append({
@@ -231,6 +231,7 @@ for ticker in tickers[:100]:
             "POP": round(pop*100,1),
             "Volume": volume,
             "OI": oi,
+            "Quality": quality,
             "Score": round(score,3)
         })
 
@@ -243,10 +244,13 @@ df = pd.DataFrame(results)
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
-    st.subheader("🔥 Trades réellement exécutables")
+    st.subheader("🔥 Trades Wheel exécutables")
     st.dataframe(df, use_container_width=True)
 
+    st.subheader("🏆 Top 5")
+    st.write(df.head(5))
+
 else:
-    st.warning("⚠️ Aucun trade valide (liquidité stricte)")
+    st.warning("⚠️ Aucun trade trouvé — conditions marché faibles")
 
 st.caption(f"Trades trouvés: {len(results)}")
