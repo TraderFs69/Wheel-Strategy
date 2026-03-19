@@ -9,7 +9,7 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (MASSIVE SNAPSHOT PRO)")
+st.title("🔥 TEA - Wheel Scanner (DEBUG MODE)")
 
 selected_date = st.sidebar.date_input("Expiration")
 run_scan = st.sidebar.button("🚀 Lancer")
@@ -43,7 +43,10 @@ def greeks_put(S, K, T, r, sigma):
 # -------------------------
 def get_options(ticker):
     try:
-        return list(client.list_options_contracts(underlying_ticker=ticker, limit=500))
+        return list(client.list_options_contracts(
+            underlying_ticker=ticker,
+            limit=1000  # 🔥 plus large
+        ))
     except Exception as e:
         st.write(f"Erreur options {ticker}: {e}")
         return []
@@ -71,23 +74,22 @@ if run_scan:
             exp = opt.expiration_date
             opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
 
-            if opt_date != selected_date:
+            # 🔥 FIX 1 — date flexible
+            if abs((opt_date - selected_date).days) > 3:
                 continue
 
             strike = opt.strike_price
-
-            # 🔥 SYMBOL CORRECT
             symbol = opt.ticker
 
             try:
                 snap = client.get_snapshot_option(ticker, symbol)
-            except Exception as e:
+            except:
                 continue
 
             time.sleep(0.05)
 
             # -------------------------
-            # UNDERLYING PRICE (snapshot)
+            # UNDERLYING PRICE
             # -------------------------
             underlying = snap.underlying_asset if hasattr(snap, "underlying_asset") else None
             price = getattr(underlying, "price", None) if underlying else None
@@ -125,7 +127,7 @@ if run_scan:
             vega = vega_real if vega_real is not None else vega_calc
 
             # -------------------------
-            # PREMIUM (MATCH GOOGLE)
+            # PREMIUM
             # -------------------------
             quote = snap.last_quote if snap.last_quote else None
             trade = snap.last_trade if snap.last_trade else None
@@ -133,19 +135,28 @@ if run_scan:
             bid = getattr(quote, "bid", None) if quote else None
             ask = getattr(quote, "ask", None) if quote else None
 
-            # 🔥 MID PRICE = navigateur
+            # 🔥 mid price
             if bid is not None and ask is not None:
                 premium = (bid + ask) / 2
-
             elif trade and hasattr(trade, "price"):
                 premium = trade.price
-
             else:
-                continue  # skip si pas de data réelle
-
-            # 🔥 filtre liquidité (option tradable)
-            if bid is None or bid < 0.05:
                 continue
+
+            # 🔥 FIX 2 — filtre relax (debug)
+            if bid is None:
+                continue
+
+            # 🔥 FIX 3 — DEBUG VISUEL
+            st.write({
+                "ticker": ticker,
+                "symbol": symbol,
+                "strike": strike,
+                "price": price,
+                "bid": bid,
+                "ask": ask,
+                "date": exp
+            })
 
             results.append({
                 "Ticker": ticker,
@@ -163,7 +174,7 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé (filtre strict actif)")
+        st.error("⚠️ Aucun trade trouvé (mode debug)")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
