@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner ELITE")
+st.title("🔥 TEA - Wheel Scanner EXECUTION READY")
 
 # -------------------------
 # USER INPUT
@@ -20,7 +20,8 @@ week_choice = st.sidebar.selectbox(
     ["Prochain vendredi", "2e vendredi", "3e vendredi"]
 )
 
-min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 0)
+min_oi = st.sidebar.slider("Min Open Interest", 0, 2000, 10)
+min_volume = st.sidebar.slider("Min Volume", 0, 500, 5)
 
 # -------------------------
 # CALCUL VENDREDI
@@ -105,6 +106,8 @@ def get_snapshot(symbol):
             "theta": greeks.get("theta"),
             "iv": res.get("implied_volatility"),
             "mid": mid,
+            "bid": bid,
+            "ask": ask,
             "volume": res.get("day", {}).get("volume", 0) if isinstance(res.get("day"), dict) else 0
         }
     except:
@@ -112,7 +115,7 @@ def get_snapshot(symbol):
 
 
 # -------------------------
-# STOCK SCORING (ASSOUPLI)
+# STOCK SCORE
 # -------------------------
 def stock_score(df):
     if df is None or len(df) < 200:
@@ -149,10 +152,6 @@ for ticker in tickers[:100]:
     hist = get_history(ticker)
     s_score = stock_score(hist)
 
-    # 🔥 plus permissif
-    if s_score < 0:
-        continue
-
     options = get_options(ticker)
 
     for opt in options[:80]:
@@ -168,36 +167,39 @@ for ticker in tickers[:100]:
 
         exp_date = datetime.strptime(expiration, "%Y-%m-%d").date()
 
-        # 🔥 expiration FLEXIBLE
         if abs((exp_date - target_date).days) > 2:
             continue
 
-        # 🔥 zone wheel
         distance = (price - strike) / price
         if distance < 0.01 or distance > 0.12:
             continue
 
         snapshot = get_snapshot(opt.get("ticker"))
-
-        # 🔥 fallback complet
         if not snapshot:
-            delta = -0.20
-            premium = abs(price - strike) * 0.05
-            iv = 0.30
-            volume = 0
-        else:
-            delta = snapshot.get("delta")
-            premium = snapshot.get("mid")
-            iv = snapshot.get("iv", 0.30)
-            volume = snapshot.get("volume", 0)
+            continue
 
-        if not premium or premium == 0:
-            premium = abs(price - strike) * 0.05
+        delta = snapshot.get("delta")
+        bid = snapshot.get("bid", 0)
+        ask = snapshot.get("ask", 0)
+        volume = snapshot.get("volume", 0)
+        iv = snapshot.get("iv", 0.30)
+
+        # 🔥 EXECUTION FILTER
+        if bid <= 0:
+            continue
+
+        if volume < min_volume:
+            continue
+
+        spread = ask - bid
+        if spread > bid * 0.5:
+            continue
+
+        premium = (bid + ask) / 2
 
         if delta is None:
-            delta = -0.20
+            continue
 
-        # 🔥 DELTA FLEXIBLE
         if not (target_delta - 0.10 <= abs(delta) <= target_delta + 0.10):
             continue
 
@@ -222,12 +224,16 @@ for ticker in tickers[:100]:
             "Price": round(price,2),
             "Strike": strike,
             "Premium": round(premium,2),
+            "Bid": bid,
+            "Ask": ask,
+            "Spread": round(spread,2),
             "Delta": round(delta,2),
             "POP": round(pop*100,1),
-            "Stock Score": s_score,
-            "Annual %": round(annual_return*100,1),
+            "Volume": volume,
+            "OI": oi,
             "Score": round(score,3)
         })
+
 
 # -------------------------
 # DISPLAY
@@ -237,10 +243,10 @@ df = pd.DataFrame(results)
 if not df.empty:
     df = df.sort_values("Score", ascending=False)
 
-    st.subheader("🔥 Meilleures opportunités Wheel")
+    st.subheader("🔥 Trades réellement exécutables")
     st.dataframe(df, use_container_width=True)
 
 else:
-    st.warning("⚠️ Aucun trade trouvé — élargis le delta")
+    st.warning("⚠️ Aucun trade valide (liquidité stricte)")
 
 st.caption(f"Trades trouvés: {len(results)}")
