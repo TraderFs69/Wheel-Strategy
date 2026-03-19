@@ -39,18 +39,23 @@ def greeks_put(S, K, T, r, sigma):
     return delta, theta, vega
 
 # -------------------------
-# PRICE
+# PRICE (FIX ICI)
 # -------------------------
 def get_price(ticker):
     try:
         data = client.get_previous_close_agg(ticker)
-        return data.close
+
+        if not data or len(data) == 0:
+            return None
+
+        return data[0].close  # 🔥 FIX
+
     except Exception as e:
         st.write(f"Erreur prix {ticker}: {e}")
         return None
 
 # -------------------------
-# OPTIONS (FIX)
+# OPTIONS
 # -------------------------
 def get_options(ticker):
     try:
@@ -108,11 +113,11 @@ if run_scan:
             # fallback greeks
             delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
 
-            # ✅ FIX MAJEUR : utiliser le vrai symbole
+            # 🔥 UTILISER LE BON SYMBOL
             symbol = opt.ticker
 
             try:
-                st.write(f"DEBUG → {ticker} | {symbol}")  # DEBUG
+                st.write(f"DEBUG → {ticker} | {symbol}")
                 snap = client.get_snapshot_option(ticker, symbol)
             except Exception as e:
                 st.write(f"Erreur snapshot {symbol}: {e}")
