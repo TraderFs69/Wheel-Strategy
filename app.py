@@ -6,7 +6,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("⚡ TEA - Wheel Scanner (Distance = Delta proxy)")
+st.title("⚡ TEA - Wheel Scanner (Analyse complète)")
 
 # -------------------------
 # INPUT
@@ -50,6 +50,33 @@ def get_options(ticker):
     except:
         return []
 
+
+@st.cache_data(ttl=300)
+def get_snapshot(symbol):
+    try:
+        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
+        r = requests.get(url).json()
+
+        res = r.get("results", {})
+
+        greeks = res.get("greeks", {}) or {}
+        quote = res.get("last_quote", {}) or {}
+
+        bid = quote.get("bid", 0)
+        ask = quote.get("ask", 0)
+
+        premium = (bid + ask) / 2 if bid and ask else bid or 0
+
+        return {
+            "delta": greeks.get("delta"),
+            "bid": bid,
+            "ask": ask,
+            "premium": premium
+        }
+    except:
+        return None
+
+
 # -------------------------
 # SCAN
 # -------------------------
@@ -58,11 +85,7 @@ if run_scan:
     results = []
     progress = st.progress(0)
 
-    selected_date_str = selected_date.strftime("%Y-%m-%d")
-
-    st.write(f"🔎 Scan pour expiration: {selected_date_str}")
-
-    for i, ticker in enumerate(tickers[:50]):  # rapide
+    for i, ticker in enumerate(tickers[:50]):
 
         price = get_price(ticker)
         if not price:
@@ -72,16 +95,11 @@ if run_scan:
 
         for opt in options:
 
-            # seulement puts
             if opt.get("contract_type") != "put":
                 continue
 
             exp = opt.get("expiration_date")
 
-            if not exp:
-                continue
-
-            # tolérance date (important)
             try:
                 opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
             except:
@@ -92,21 +110,17 @@ if run_scan:
 
             strike = opt.get("strike_price")
 
-            if not strike:
+            if not strike or strike >= price:
                 continue
 
-            # seulement OTM
-            if strike >= price:
-                continue
-
-            # 🎯 distance = proxy delta
+            # 🎯 zone delta approx
             distance = (price - strike) / price
 
-            # 🔥 ZONE DELTA approx (-0.20 à -0.30)
             if 0.03 <= distance <= 0.10:
 
                 results.append({
                     "Ticker": ticker,
+                    "OptionSymbol": opt.get("ticker"),
                     "Price": round(price, 2),
                     "Strike": strike,
                     "Distance %": round(distance * 100, 2),
@@ -117,23 +131,64 @@ if run_scan:
 
     df = pd.DataFrame(results)
 
+    # -------------------------
+    # AJOUT DELTA + PREMIUM
+    # -------------------------
     if not df.empty:
 
-        df = df.sort_values(["Ticker", "Strike"])
+        st.subheader("⏳ Enrichissement (delta + premium)...")
 
-        st.subheader("🔥 Options dans la zone delta (-0.20 à -0.30 approx)")
+        deltas = []
+        premiums = []
+        bids = []
+        asks = []
+
+        progress2 = st.progress(0)
+
+        for i, row in df.iterrows():
+            snap = get_snapshot(row["OptionSymbol"])
+
+            if snap:
+                deltas.append(snap["delta"])
+                premiums.append(snap["premium"])
+                bids.append(snap["bid"])
+                asks.append(snap["ask"])
+            else:
+                deltas.append(None)
+                premiums.append(0)
+                bids.append(0)
+                asks.append(0)
+
+            progress2.progress((i + 1) / len(df))
+
+        df["Delta"] = deltas
+        df["Premium"] = premiums
+        df["Bid"] = bids
+        df["Ask"] = asks
+
+        # nettoyage
+        df = df[df["Delta"].notna()]
+
+        # 🎯 METRIQUE CLÉ
+        df["Premium/Strike %"] = (df["Premium"] / df["Strike"] * 100).round(2)
+
+        df = df.sort_values(["Ticker", "Delta"])
+
+        # -------------------------
+        # DISPLAY
+        # -------------------------
+        st.subheader("🔥 Analyse Wheel complète")
         st.dataframe(df, use_container_width=True)
 
-        # regroupé par stock
         st.subheader("📌 Par stock")
         for ticker in df["Ticker"].unique():
             st.markdown(f"### {ticker}")
             st.dataframe(df[df["Ticker"] == ticker], use_container_width=True)
 
     else:
-        st.error("⚠️ Aucun résultat — change la date (vendredi)")
+        st.error("⚠️ Aucun résultat — change la date")
 
     st.caption(f"Options trouvées: {len(df)}")
 
 else:
-    st.info("👉 Choisis une date puis clique sur Calculer")
+    st.info("👉 Clique sur Calculer")
