@@ -2,79 +2,75 @@ import streamlit as st
 import pandas as pd
 import requests
 import math
-import time
 from datetime import datetime
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
-st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (FINAL FIX RATE LIMIT)")
+st.title("🔥 TEA - Wheel Scanner (PRO VERSION AUTONOME)")
 
-# -------------------------
-# INPUT
-# -------------------------
 selected_date = st.sidebar.date_input("Expiration")
 run_scan = st.sidebar.button("🚀 Lancer")
 
-# -------------------------
-# STOCKS TEST
-# -------------------------
 tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
 # -------------------------
-# BUILD OPTION SYMBOL
-# -------------------------
-def build_option_symbol(ticker, expiration, strike, contract_type):
-    try:
-        date = datetime.strptime(expiration, "%Y-%m-%d")
-        yymmdd = date.strftime("%y%m%d")
-
-        strike_int = int(float(strike) * 1000)
-        strike_str = str(strike_int).zfill(8)
-
-        cp = "P" if contract_type == "put" else "C"
-
-        return f"O:{ticker}{yymmdd}{cp}{strike_str}"
-    except:
-        return None
-
-# -------------------------
-# DATA FUNCTIONS
-# -------------------------
-def get_price(ticker):
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r["results"][0]["c"]
-    except:
-        return None
-
-def get_options(ticker):
-    try:
-        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-        return requests.get(url).json().get("results", [])
-    except:
-        return []
-
-def get_snapshot(symbol):
-    try:
-        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r.get("results", {})
-    except:
-        return {}
-
-# -------------------------
-# BLACK-SCHOLES DELTA
+# BLACK-SCHOLES
 # -------------------------
 def norm_cdf(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-def put_delta(S, K, T, r, sigma):
+def norm_pdf(x):
+    return (1 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x**2)
+
+def greeks_put(S, K, T, r, sigma):
+
     if T <= 0:
-        return 0
+        return 0, 0, 0
+
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    return norm_cdf(d1) - 1
+    d2 = d1 - sigma * math.sqrt(T)
+
+    delta = norm_cdf(d1) - 1
+    theta = (-S * norm_pdf(d1) * sigma / (2 * math.sqrt(T))) + (r * K * math.exp(-r * T) * norm_cdf(-d2))
+    vega = S * norm_pdf(d1) * math.sqrt(T)
+
+    return delta, theta, vega
+
+# -------------------------
+# DATA
+# -------------------------
+def get_price(ticker):
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
+    return requests.get(url).json()["results"][0]["c"]
+
+def get_options(ticker):
+    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
+    return requests.get(url).json().get("results", [])
+
+def get_quote(symbol):
+    try:
+        url = f"https://api.polygon.io/v3/quotes/options/{symbol}?limit=1&apiKey={API_KEY}"
+        r = requests.get(url).json()
+        res = r.get("results", [])
+        if res:
+            bid = res[0].get("bid_price", 0)
+            ask = res[0].get("ask_price", 0)
+            return bid, ask
+    except:
+        pass
+    return 0, 0
+
+# -------------------------
+# BUILD SYMBOL
+# -------------------------
+def build_option_symbol(ticker, expiration, strike):
+    date = datetime.strptime(expiration, "%Y-%m-%d")
+    yymmdd = date.strftime("%y%m%d")
+
+    strike_int = int(float(strike) * 1000)
+    strike_str = str(strike_int).zfill(8)
+
+    return f"O:{ticker}{yymmdd}P{strike_str}"
 
 # -------------------------
 # SCAN
@@ -86,14 +82,8 @@ if run_scan:
     for ticker in tickers:
 
         price = get_price(ticker)
-        if not price:
-            continue
-
         options = get_options(ticker)
 
-        candidates = []
-
-        # STEP 1: FILTRE
         for opt in options:
 
             if opt.get("contract_type") != "put":
@@ -116,67 +106,46 @@ if run_scan:
 
             distance = (price - strike) / price
 
-            if 0.02 <= distance <= 0.10:
-                candidates.append((opt, distance))
-
-        # 🔥 LIMITATION INTELLIGENTE
-        candidates = sorted(candidates, key=lambda x: x[1])[:10]
-
-        # STEP 2: SNAPSHOT
-        for opt, distance in candidates:
-
-            symbol = build_option_symbol(
-                ticker,
-                opt.get("expiration_date"),
-                opt.get("strike_price"),
-                opt.get("contract_type")
-            )
-
-            if not symbol:
+            if not (0.02 <= distance <= 0.10):
                 continue
 
-            snap = get_snapshot(symbol) or {}
+            dte = (opt_date - datetime.today().date()).days
+            if dte <= 0:
+                continue
 
-            # 💣 RATE LIMIT FIX
-            time.sleep(0.25)
+            T = dte / 365
 
-            greeks = snap.get("greeks", {}) or {}
-            last_trade = snap.get("last_trade", {}) or {}
+            # 🔥 CALCUL GREEKS
+            delta, theta, vega = greeks_put(price, strike, T, 0.04, 0.30)
 
-            dte = (datetime.strptime(opt.get("expiration_date"), "%Y-%m-%d").date() - datetime.today().date()).days
-            T = dte / 365 if dte > 0 else 0
+            # 🔥 QUOTE RÉELLE
+            symbol = build_option_symbol(ticker, exp, strike)
+            bid, ask = get_quote(symbol)
 
-            delta_calc = put_delta(price, opt.get("strike_price"), T, 0.04, 0.30)
+            if bid == 0 and ask == 0:
+                continue
 
-            delta_real = greeks.get("delta")
-            delta_used = delta_real if delta_real is not None else delta_calc
-
-            premium = last_trade.get("price", 0)
+            premium = (bid + ask) / 2 if bid and ask else max(bid, ask)
 
             results.append({
                 "Ticker": ticker,
-                "Strike": opt.get("strike_price"),
-                "Distance %": round(distance * 100, 2),
-                "Delta utilisé": round(delta_used, 3),
-                "Delta réel": delta_real,
-                "Theta": greeks.get("theta"),
-                "Vega": greeks.get("vega"),
-                "Premium": premium,
-                "Premium/Strike %": round(premium / opt.get("strike_price") * 100, 2) if premium else 0
+                "Strike": strike,
+                "Price": price,
+                "Delta": round(delta, 3),
+                "Theta": round(theta, 2),
+                "Vega": round(vega, 2),
+                "Premium": round(premium, 2),
+                "Premium/Strike %": round(premium / strike * 100, 2),
+                "Distance %": round(distance * 100, 2)
             })
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé")
+        st.error("⚠️ Aucun trade trouvé (marché calme ou filtre)")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
-
-        st.subheader("🔥 Résultats")
         st.dataframe(df, use_container_width=True)
 
-        st.subheader("🏆 Top 10")
-        st.write(df.head(10))
-
 else:
-    st.info("👉 Clique sur Lancer le scan")
+    st.info("👉 Clique sur Lancer")
