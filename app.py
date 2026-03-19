@@ -1,18 +1,19 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
 from massive import RESTClient
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
-st.title("🔥 TEA - AAPL Wheel (EOD)")
+st.title("🔥 TEA - AAPL Wheel (REST API PRO)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("Lancer")
 
 # -------------------------
-# PRIX CLOSE (EOD)
+# CLOSE PRICE (EOD)
 # -------------------------
 def get_close_price():
     try:
@@ -21,14 +22,14 @@ def get_close_price():
         if not data or len(data) == 0:
             return None
 
-        return data[0].close  # 🔥 FIX IMPORTANT
+        return data[0].close
 
     except Exception as e:
         st.write(f"Erreur prix: {e}")
         return None
 
 # -------------------------
-# OPTIONS
+# OPTIONS LIST
 # -------------------------
 def get_options():
     try:
@@ -39,6 +40,22 @@ def get_options():
     except Exception as e:
         st.write(f"Erreur options: {e}")
         return []
+
+# -------------------------
+# SNAPSHOT REST (KEY PART)
+# -------------------------
+def get_snapshot_rest(symbol):
+    try:
+        url = f"https://api.polygon.io/v3/snapshot/options/AAPL/{symbol}?apiKey={API_KEY}"
+        res = requests.get(url).json()
+
+        if "results" not in res:
+            return None
+
+        return res["results"]
+
+    except:
+        return None
 
 # -------------------------
 # MAIN
@@ -54,10 +71,6 @@ if run:
     st.success(f"Close AAPL: {round(price, 2)}")
 
     options = get_options()
-
-    if not options:
-        st.error("❌ Aucune option retournée")
-        st.stop()
 
     results = []
 
@@ -75,7 +88,7 @@ if run:
 
         strike = opt.strike_price
 
-        # 🔥 DISTANCE 3% à 8% (comme tu veux)
+        # 🎯 distance 3% à 8%
         distance = (price - strike) / price
 
         if not (0.03 <= distance <= 0.08):
@@ -83,38 +96,50 @@ if run:
 
         symbol = opt.ticker
 
-        try:
-            snap = client.get_snapshot_option("AAPL", symbol)
-        except:
+        data = get_snapshot_rest(symbol)
+
+        if data is None:
             continue
 
         # -------------------------
-        # DATA
+        # EXTRACTION EXACTE
         # -------------------------
-        quote = snap.last_quote if snap.last_quote else None
-        greeks = snap.greeks if snap.greeks else None
+        day = data.get("day", {})
+        greeks = data.get("greeks", {})
 
-        bid = getattr(quote, "bid", None) if quote else None
-        ask = getattr(quote, "ask", None) if quote else None
+        bid = None  # REST snapshot ne donne pas toujours bid/ask
+        ask = None
 
-        delta = getattr(greeks, "delta", None) if greeks else None
-        theta = getattr(greeks, "theta", None) if greeks else None
-        vega = getattr(greeks, "vega", None) if greeks else None
+        premium = day.get("close", None)
+
+        delta = greeks.get("delta", None)
+        theta = greeks.get("theta", None)
+        vega = greeks.get("vega", None)
+
+        # 🔥 DEBUG (match navigateur)
+        st.write({
+            "symbol": symbol,
+            "strike": strike,
+            "premium": premium,
+            "delta": delta
+        })
+
+        if premium is None or delta is None:
+            continue
 
         results.append({
             "Strike": strike,
             "Distance %": round(distance * 100, 2),
-            "Bid": bid,
-            "Ask": ask,
-            "Delta": delta,
-            "Theta": theta,
-            "Vega": vega,
+            "Premium": premium,
+            "Delta": round(delta, 3),
+            "Theta": round(theta, 3) if theta else None,
+            "Vega": round(vega, 3) if vega else None,
             "Symbol": symbol
         })
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat (date ou strikes trop restrictifs)")
+        st.error("⚠️ Aucun résultat")
     else:
         st.dataframe(df.sort_values("Strike"))
