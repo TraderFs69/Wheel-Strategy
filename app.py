@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (REAL PREMIUM FIX)")
+st.title("🔥 TEA - Wheel Scanner (REAL DATA STABLE)")
 
 # -------------------------
 # INPUT
@@ -63,7 +63,7 @@ def get_options(ticker):
         return []
 
 # -------------------------
-# BUILD SYMBOL
+# BUILD OPTION SYMBOL
 # -------------------------
 def build_option_symbol(ticker, expiration, strike):
     try:
@@ -78,7 +78,7 @@ def build_option_symbol(ticker, expiration, strike):
         return None
 
 # -------------------------
-# GET PREMIUM (REAL)
+# GET PREMIUM (MID PRICE)
 # -------------------------
 def get_option_premium(symbol):
     try:
@@ -86,11 +86,32 @@ def get_option_premium(symbol):
         r = requests.get(url).json()
 
         res = r.get("results", {})
+
         last = res.get("last_trade", {}) or {}
+        quote = res.get("last_quote", {}) or {}
 
-        premium = last.get("price")
+        bid = quote.get("bid")
+        ask = quote.get("ask")
+        last_price = last.get("price")
 
-        return premium
+        # 💣 MID PRICE PRIORITAIRE
+        if bid and ask and bid > 0 and ask > 0:
+            return (bid + ask) / 2
+
+        # fallback bid
+        if bid and bid > 0:
+            return bid
+
+        # fallback ask
+        if ask and ask > 0:
+            return ask
+
+        # fallback last
+        if last_price and last_price > 0:
+            return last_price
+
+        return None
+
     except:
         return None
 
@@ -121,7 +142,7 @@ if run_scan:
             except:
                 continue
 
-            # 💣 FILTRE EXACT
+            # 💣 FILTRE EXACT DATE
             if opt_date != selected_date:
                 continue
 
@@ -132,6 +153,7 @@ if run_scan:
 
             distance = (price - strike) / price
 
+            # zone réaliste wheel
             if not (0.01 <= distance <= 0.15):
                 continue
 
@@ -143,17 +165,16 @@ if run_scan:
 
             delta, theta, vega = greeks_put(price, strike, T, 0.04, 0.30)
 
-            # 💥 PREMIUM RÉEL
             symbol = build_option_symbol(ticker, exp, strike)
             if not symbol:
                 continue
 
             premium = get_option_premium(symbol)
 
-            # 🔥 RATE LIMIT PROTECTION
+            # 🔥 protection rate limit
             time.sleep(0.15)
 
-            if premium is None or premium == 0:
+            if premium is None:
                 continue
 
             results.append({
@@ -172,15 +193,17 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé (premium réel trop faible ou rate limit)")
+        st.error("⚠️ Aucun trade trouvé (marché ou liquidité)")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
-        st.subheader("🔥 Résultats (REAL DATA)")
+        st.subheader("🔥 Résultats")
         st.dataframe(df, use_container_width=True)
 
         st.subheader("🏆 Top 10")
         st.write(df.head(10))
+
+        st.write("📅 Dates présentes :", df["Expiration"].unique())
 
 else:
     st.info("👉 Clique sur Lancer le scan")
