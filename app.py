@@ -6,7 +6,6 @@ from datetime import datetime
 from massive import RESTClient
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
-
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
@@ -40,34 +39,24 @@ def greeks_put(S, K, T, r, sigma):
     return delta, theta, vega
 
 # -------------------------
-# BUILD SYMBOL
-# -------------------------
-def build_option_symbol(ticker, expiration, strike):
-    date = datetime.strptime(expiration, "%Y-%m-%d")
-    yymmdd = date.strftime("%y%m%d")
-
-    strike_int = int(float(strike) * 1000)
-    strike_str = str(strike_int).zfill(8)
-
-    return f"O:{ticker}{yymmdd}P{strike_str}"
-
-# -------------------------
 # PRICE
 # -------------------------
 def get_price(ticker):
     try:
         data = client.get_previous_close_agg(ticker)
         return data.close
-    except:
+    except Exception as e:
+        st.write(f"Erreur prix {ticker}: {e}")
         return None
 
 # -------------------------
-# OPTIONS
+# OPTIONS (FIX)
 # -------------------------
 def get_options(ticker):
     try:
-        return client.list_options_contracts(underlying_ticker=ticker, limit=500)
-    except:
+        return list(client.list_options_contracts(underlying_ticker=ticker, limit=500))
+    except Exception as e:
+        st.write(f"Erreur options {ticker}: {e}")
         return []
 
 # -------------------------
@@ -84,6 +73,10 @@ if run_scan:
             continue
 
         options = get_options(ticker)
+
+        if not options:
+            st.write(f"Aucune option pour {ticker}")
+            continue
 
         for opt in options:
 
@@ -115,30 +108,33 @@ if run_scan:
             # fallback greeks
             delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
 
-            symbol = build_option_symbol(ticker, exp, strike)
+            # ✅ FIX MAJEUR : utiliser le vrai symbole
+            symbol = opt.ticker
 
             try:
+                st.write(f"DEBUG → {ticker} | {symbol}")  # DEBUG
                 snap = client.get_snapshot_option(ticker, symbol)
-            except:
+            except Exception as e:
+                st.write(f"Erreur snapshot {symbol}: {e}")
                 continue
 
             time.sleep(0.1)
 
-            greeks = snap.greeks if snap.greeks else {}
-            last = snap.last_trade if snap.last_trade else {}
-            quote = snap.last_quote if snap.last_quote else {}
+            greeks = snap.greeks if snap.greeks else None
+            last = snap.last_trade if snap.last_trade else None
+            quote = snap.last_quote if snap.last_quote else None
 
-            delta_real = getattr(greeks, "delta", None)
-            theta_real = getattr(greeks, "theta", None)
-            vega_real = getattr(greeks, "vega", None)
+            delta_real = getattr(greeks, "delta", None) if greeks else None
+            theta_real = getattr(greeks, "theta", None) if greeks else None
+            vega_real = getattr(greeks, "vega", None) if greeks else None
 
             delta = delta_real if delta_real is not None else delta_calc
             theta = theta_real if theta_real is not None else theta_calc
             vega = vega_real if vega_real is not None else vega_calc
 
-            bid = getattr(quote, "bid", None)
-            ask = getattr(quote, "ask", None)
-            last_price = getattr(last, "price", None)
+            bid = getattr(quote, "bid", None) if quote else None
+            ask = getattr(quote, "ask", None) if quote else None
+            last_price = getattr(last, "price", None) if last else None
 
             if bid and ask:
                 premium = (bid + ask) / 2
