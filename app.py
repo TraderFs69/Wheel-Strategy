@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (FINAL STABLE)")
+st.title("🔥 TEA - Wheel Scanner (HYBRID PRO FINAL)")
 
 # -------------------------
 # INPUT
@@ -62,7 +62,7 @@ def get_options(ticker):
         return []
 
 # -------------------------
-# BUILD SYMBOL
+# BUILD OPTION SYMBOL
 # -------------------------
 def build_option_symbol(ticker, expiration, strike):
     try:
@@ -77,39 +77,15 @@ def build_option_symbol(ticker, expiration, strike):
         return None
 
 # -------------------------
-# PREMIUM (REAL + FALLBACK)
+# SNAPSHOT
 # -------------------------
-def get_option_premium(symbol, price, strike, T):
-
+def get_option_snapshot(symbol):
     try:
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
-
-        res = r.get("results", {})
-
-        last = res.get("last_trade", {}) or {}
-        quote = res.get("last_quote", {}) or {}
-
-        bid = quote.get("bid")
-        ask = quote.get("ask")
-        last_price = last.get("price")
-
-        # 1️⃣ MID PRICE
-        if bid and ask and bid > 0 and ask > 0:
-            return (bid + ask) / 2
-
-        # 2️⃣ LAST
-        if last_price and last_price > 0:
-            return last_price
-
+        return r.get("results", {})
     except:
-        pass
-
-    # 💣 FALLBACK INTELLIGENT
-    intrinsic = max(0, strike - price)
-    extrinsic = price * 0.02 * math.sqrt(T)
-
-    return intrinsic + extrinsic
+        return {}
 
 # -------------------------
 # SCAN
@@ -138,7 +114,7 @@ if run_scan:
             except:
                 continue
 
-            # 💣 FILTRE EXACT DATE
+            # ✅ FILTRE EXACT
             if opt_date != selected_date:
                 continue
 
@@ -158,15 +134,47 @@ if run_scan:
 
             T = dte / 365
 
-            delta, theta, vega = greeks_put(price, strike, T, 0.04, 0.30)
+            # fallback greeks
+            delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
 
             symbol = build_option_symbol(ticker, exp, strike)
             if not symbol:
                 continue
 
-            premium = get_option_premium(symbol, price, strike, T)
+            snap = get_option_snapshot(symbol)
 
-            time.sleep(0.15)  # rate limit protection
+            time.sleep(0.15)
+
+            greeks = snap.get("greeks", {}) or {}
+            last = snap.get("last_trade", {}) or {}
+            quote = snap.get("last_quote", {}) or {}
+
+            # -------------------------
+            # GREEKS HYBRIDE
+            # -------------------------
+            delta_real = greeks.get("delta")
+            theta_real = greeks.get("theta")
+            vega_real = greeks.get("vega")
+
+            delta = delta_real if delta_real is not None else delta_calc
+            theta = theta_real if theta_real is not None else theta_calc
+            vega = vega_real if vega_real is not None else vega_calc
+
+            # -------------------------
+            # PREMIUM HYBRIDE
+            # -------------------------
+            bid = quote.get("bid")
+            ask = quote.get("ask")
+            last_price = last.get("price")
+
+            if bid and ask and bid > 0 and ask > 0:
+                premium = (bid + ask) / 2
+            elif last_price and last_price > 0:
+                premium = last_price
+            else:
+                intrinsic = max(0, strike - price)
+                extrinsic = price * 0.02 * math.sqrt(T)
+                premium = intrinsic + extrinsic
 
             results.append({
                 "Ticker": ticker,
@@ -176,6 +184,9 @@ if run_scan:
                 "Delta": round(delta, 3),
                 "Theta": round(theta, 2),
                 "Vega": round(vega, 2),
+                "Delta (Poly)": delta_real,
+                "Theta (Poly)": theta_real,
+                "Vega (Poly)": vega_real,
                 "Premium": round(premium, 2),
                 "Premium/Strike %": round(premium / strike * 100, 2),
                 "Distance %": round(distance * 100, 2)
@@ -184,7 +195,7 @@ if run_scan:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé (très improbable maintenant)")
+        st.error("⚠️ Aucun trade trouvé")
     else:
         df = df.sort_values("Premium/Strike %", ascending=False)
 
