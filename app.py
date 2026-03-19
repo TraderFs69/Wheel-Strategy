@@ -1,24 +1,20 @@
 import streamlit as st
 import pandas as pd
-import requests
 import math
 import time
 from datetime import datetime
+from massive import RESTClient
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
-st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (FINAL FIXED)")
+client = RESTClient(API_KEY)
 
-# -------------------------
-# INPUT
-# -------------------------
+st.set_page_config(layout="wide")
+st.title("🔥 TEA - Wheel Scanner (MASSIVE SDK FINAL)")
+
 selected_date = st.sidebar.date_input("Expiration")
 run_scan = st.sidebar.button("🚀 Lancer")
 
-# -------------------------
-# STOCKS TEST
-# -------------------------
 tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
 # -------------------------
@@ -44,48 +40,35 @@ def greeks_put(S, K, T, r, sigma):
     return delta, theta, vega
 
 # -------------------------
-# DATA
-# -------------------------
-def get_price(ticker):
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r["results"][0]["c"]
-    except:
-        return None
-
-def get_options(ticker):
-    try:
-        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-        return requests.get(url).json().get("results", [])
-    except:
-        return []
-
-# -------------------------
 # BUILD SYMBOL
 # -------------------------
 def build_option_symbol(ticker, expiration, strike):
+    date = datetime.strptime(expiration, "%Y-%m-%d")
+    yymmdd = date.strftime("%y%m%d")
+
+    strike_int = int(float(strike) * 1000)
+    strike_str = str(strike_int).zfill(8)
+
+    return f"O:{ticker}{yymmdd}P{strike_str}"
+
+# -------------------------
+# PRICE
+# -------------------------
+def get_price(ticker):
     try:
-        date = datetime.strptime(expiration, "%Y-%m-%d")
-        yymmdd = date.strftime("%y%m%d")
-
-        strike_int = int(float(strike) * 1000)
-        strike_str = str(strike_int).zfill(8)
-
-        return f"O:{ticker}{yymmdd}P{strike_str}"
+        data = client.get_previous_close_agg(ticker)
+        return data.close
     except:
         return None
 
 # -------------------------
-# SNAPSHOT SAFE
+# OPTIONS
 # -------------------------
-def get_option_snapshot(symbol):
+def get_options(ticker):
     try:
-        url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
-        r = requests.get(url).json()
-        return r.get("results", {})
+        return client.list_options_contracts(underlying_ticker=ticker, limit=500)
     except:
-        return {}
+        return []
 
 # -------------------------
 # SCAN
@@ -104,23 +87,18 @@ if run_scan:
 
         for opt in options:
 
-            if opt.get("contract_type") != "put":
+            if opt.contract_type != "put":
                 continue
 
-            exp = opt.get("expiration_date")
+            exp = opt.expiration_date
+            opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
 
-            try:
-                opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
-            except:
-                continue
-
-            # ✅ FILTRE EXACT
             if opt_date != selected_date:
                 continue
 
-            strike = opt.get("strike_price")
+            strike = opt.strike_price
 
-            if not strike or strike >= price:
+            if strike >= price:
                 continue
 
             distance = (price - strike) / price
@@ -138,42 +116,33 @@ if run_scan:
             delta_calc, theta_calc, vega_calc = greeks_put(price, strike, T, 0.04, 0.30)
 
             symbol = build_option_symbol(ticker, exp, strike)
-            if not symbol:
+
+            try:
+                snap = client.get_snapshot_option(ticker, symbol)
+            except:
                 continue
 
-            # 💣 FIX CRASH ICI
-            snap = get_option_snapshot(symbol) or {}
+            time.sleep(0.1)
 
-            if not isinstance(snap, dict):
-                snap = {}
+            greeks = snap.greeks if snap.greeks else {}
+            last = snap.last_trade if snap.last_trade else {}
+            quote = snap.last_quote if snap.last_quote else {}
 
-            time.sleep(0.15)
-
-            greeks = snap.get("greeks", {}) or {}
-            last = snap.get("last_trade", {}) or {}
-            quote = snap.get("last_quote", {}) or {}
-
-            # -------------------------
-            # GREEKS HYBRIDE
-            # -------------------------
-            delta_real = greeks.get("delta")
-            theta_real = greeks.get("theta")
-            vega_real = greeks.get("vega")
+            delta_real = getattr(greeks, "delta", None)
+            theta_real = getattr(greeks, "theta", None)
+            vega_real = getattr(greeks, "vega", None)
 
             delta = delta_real if delta_real is not None else delta_calc
             theta = theta_real if theta_real is not None else theta_calc
             vega = vega_real if vega_real is not None else vega_calc
 
-            # -------------------------
-            # PREMIUM HYBRIDE
-            # -------------------------
-            bid = quote.get("bid")
-            ask = quote.get("ask")
-            last_price = last.get("price")
+            bid = getattr(quote, "bid", None)
+            ask = getattr(quote, "ask", None)
+            last_price = getattr(last, "price", None)
 
-            if bid and ask and bid > 0 and ask > 0:
+            if bid and ask:
                 premium = (bid + ask) / 2
-            elif last_price and last_price > 0:
+            elif last_price:
                 premium = last_price
             else:
                 intrinsic = max(0, strike - price)
@@ -188,9 +157,6 @@ if run_scan:
                 "Delta": round(delta, 3),
                 "Theta": round(theta, 2),
                 "Vega": round(vega, 2),
-                "Delta (Poly)": delta_real,
-                "Theta (Poly)": theta_real,
-                "Vega (Poly)": vega_real,
                 "Premium": round(premium, 2),
                 "Premium/Strike %": round(premium / strike * 100, 2),
                 "Distance %": round(distance * 100, 2)
@@ -208,8 +174,3 @@ if run_scan:
 
         st.subheader("🏆 Top 10")
         st.write(df.head(10))
-
-        st.write("📅 Dates présentes :", df["Expiration"].unique())
-
-else:
-    st.info("👉 Clique sur Lancer le scan")
