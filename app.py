@@ -8,7 +8,7 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner PRO FINAL (FIX SNAPSHOT)")
+st.title("🔥 TEA - Wheel Scanner PRO (REAL DATA FIXED)")
 
 # -------------------------
 # INPUT
@@ -63,7 +63,7 @@ def get_price(ticker):
     except:
         return None
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_snapshot(symbol):
     try:
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
@@ -71,12 +71,14 @@ def get_snapshot(symbol):
         res = r.get("results", {})
 
         greeks = res.get("greeks", {}) or {}
+        last_trade = res.get("last_trade", {}) or {}
 
         return {
             "delta_real": greeks.get("delta"),
             "theta": greeks.get("theta"),
             "vega": greeks.get("vega"),
-            "iv": res.get("implied_volatility")
+            "iv": res.get("implied_volatility"),
+            "last": last_trade.get("price", 0)
         }
     except:
         return None
@@ -89,7 +91,6 @@ if run_scan:
     tickers = load_sp500()
 
     results = []
-    total_candidates = 0
     progress = st.progress(0)
 
     for i, ticker in enumerate(tickers):
@@ -120,12 +121,10 @@ if run_scan:
             if not strike or strike >= price:
                 continue
 
-            # 🎯 DISTANCE
+            # 🎯 DISTANCE FILTER
             distance = (price - strike) / price
             if not (0.02 <= distance <= 0.15):
                 continue
-
-            total_candidates += 1
 
             dte = (opt_date - datetime.today().date()).days
             if dte <= 0:
@@ -136,7 +135,7 @@ if run_scan:
             # 🎯 DELTA INTERNE
             delta_calc = put_delta(price, strike, T, risk_free_rate, 0.30)
 
-            # 🔥 SNAPSHOT (AVEC FALLBACK)
+            # 🔥 SNAPSHOT
             snap = get_snapshot(opt.get("ticker"))
 
             if snap:
@@ -144,14 +143,19 @@ if run_scan:
                 delta_real = snap["delta_real"]
                 theta = snap["theta"]
                 vega = snap["vega"]
+
+                # 💣 PREMIUM RÉEL
+                if snap["last"] and snap["last"] > 0:
+                    premium = snap["last"]
+                else:
+                    premium = put_price_bs(price, strike, T, risk_free_rate, iv)
+
             else:
                 iv = 0.30
                 delta_real = None
                 theta = None
                 vega = None
-
-            # 💰 PRICING
-            premium = put_price_bs(price, strike, T, risk_free_rate, iv)
+                premium = put_price_bs(price, strike, T, risk_free_rate, iv)
 
             if premium <= 0:
                 continue
@@ -186,20 +190,14 @@ if run_scan:
                 "Score": round(score, 3)
             })
 
-            time.sleep(0.005)
+            time.sleep(0.003)
 
         progress.progress((i + 1) / len(tickers))
-
-    # -------------------------
-    # DEBUG
-    # -------------------------
-    st.write("🔎 Candidats:", total_candidates)
-    st.write("📊 Trades générés:", len(results))
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat — vérifier marché")
+        st.error("⚠️ Aucun trade trouvé")
         st.stop()
 
     # 🎯 FILTRE FINAL DELTA
