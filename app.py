@@ -6,33 +6,27 @@ from datetime import datetime
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
 st.set_page_config(layout="wide")
-st.title("⚡ TEA - Wheel Scanner (Analyse complète)")
+st.title("⚡ TEA - Wheel Scanner (EXPIRATION MODE)")
 
 # -------------------------
 # INPUT
 # -------------------------
-st.sidebar.header("📅 Paramètres")
-
-selected_date = st.sidebar.date_input(
-    "Choisir une expiration (vendredi recommandé)",
-    datetime.today()
-)
-
+selected_date = st.sidebar.date_input("Expiration", datetime.today())
 run_scan = st.sidebar.button("🚀 Calculer")
 
 # -------------------------
-# LOAD TICKERS
+# DATA
 # -------------------------
-@st.cache_data
-def load_sp500():
-    url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
-    return pd.read_csv(url)["Symbol"].tolist()
+@st.cache_data(ttl=300)
+def get_all_options_by_date(date_str):
+    try:
+        url = f"https://api.polygon.io/v3/reference/options/contracts?expiration_date={date_str}&limit=1000&apiKey={API_KEY}"
+        r = requests.get(url).json()
+        return r.get("results", [])
+    except:
+        return []
 
-tickers = load_sp500()
 
-# -------------------------
-# DATA FUNCTIONS
-# -------------------------
 @st.cache_data(ttl=300)
 def get_price(ticker):
     try:
@@ -43,20 +37,10 @@ def get_price(ticker):
 
 
 @st.cache_data(ttl=300)
-def get_options(ticker):
-    try:
-        url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&limit=500&apiKey={API_KEY}"
-        return requests.get(url).json().get("results", [])
-    except:
-        return []
-
-
-@st.cache_data(ttl=300)
 def get_snapshot(symbol):
     try:
         url = f"https://api.polygon.io/v3/snapshot/options/{symbol}?apiKey={API_KEY}"
         r = requests.get(url).json()
-
         res = r.get("results", {})
 
         greeks = res.get("greeks", {}) or {}
@@ -64,14 +48,13 @@ def get_snapshot(symbol):
 
         bid = quote.get("bid", 0)
         ask = quote.get("ask", 0)
-
         premium = (bid + ask) / 2 if bid and ask else bid or 0
 
         return {
             "delta": greeks.get("delta"),
+            "premium": premium,
             "bid": bid,
-            "ask": ask,
-            "premium": premium
+            "ask": ask
         }
     except:
         return None
@@ -82,113 +65,72 @@ def get_snapshot(symbol):
 # -------------------------
 if run_scan:
 
+    date_str = selected_date.strftime("%Y-%m-%d")
+    st.write(f"🔎 Scan direct expiration: {date_str}")
+
+    options = get_all_options_by_date(date_str)
+
+    st.write(f"Options récupérées: {len(options)}")
+
     results = []
     progress = st.progress(0)
 
-    for i, ticker in enumerate(tickers[:50]):
+    for i, opt in enumerate(options):
+
+        if opt.get("contract_type") != "put":
+            continue
+
+        ticker = opt.get("underlying_ticker")
+        strike = opt.get("strike_price")
+
+        if not ticker or not strike:
+            continue
 
         price = get_price(ticker)
         if not price:
             continue
 
-        options = get_options(ticker)
+        # 🎯 DISTANCE (delta proxy)
+        if strike >= price:
+            continue
 
-        for opt in options:
+        distance = (price - strike) / price
 
-            if opt.get("contract_type") != "put":
-                continue
+        if not (0.03 <= distance <= 0.10):
+            continue
 
-            exp = opt.get("expiration_date")
+        # 🔥 snapshot seulement ici
+        snap = get_snapshot(opt.get("ticker"))
+        if not snap:
+            continue
 
-            try:
-                opt_date = datetime.strptime(exp, "%Y-%m-%d").date()
-            except:
-                continue
+        delta = snap.get("delta")
+        if delta is None:
+            continue
 
-            if abs((opt_date - selected_date).days) > 2:
-                continue
+        if not (-0.30 <= delta <= -0.20):
+            continue
 
-            strike = opt.get("strike_price")
+        results.append({
+            "Ticker": ticker,
+            "Price": round(price, 2),
+            "Strike": strike,
+            "Delta": round(delta, 2),
+            "Premium": round(snap["premium"], 2),
+            "Premium/Strike %": round(snap["premium"] / strike * 100, 2),
+            "Bid": snap["bid"],
+            "Ask": snap["ask"]
+        })
 
-            if not strike or strike >= price:
-                continue
-
-            # 🎯 zone delta approx
-            distance = (price - strike) / price
-
-            if 0.03 <= distance <= 0.10:
-
-                results.append({
-                    "Ticker": ticker,
-                    "OptionSymbol": opt.get("ticker"),
-                    "Price": round(price, 2),
-                    "Strike": strike,
-                    "Distance %": round(distance * 100, 2),
-                    "Expiration": exp
-                })
-
-        progress.progress((i + 1) / len(tickers[:50]))
+        progress.progress((i + 1) / len(options))
 
     df = pd.DataFrame(results)
 
-    # -------------------------
-    # AJOUT DELTA + PREMIUM
-    # -------------------------
     if not df.empty:
-
-        st.subheader("⏳ Enrichissement (delta + premium)...")
-
-        deltas = []
-        premiums = []
-        bids = []
-        asks = []
-
-        progress2 = st.progress(0)
-
-        for i, row in df.iterrows():
-            snap = get_snapshot(row["OptionSymbol"])
-
-            if snap:
-                deltas.append(snap["delta"])
-                premiums.append(snap["premium"])
-                bids.append(snap["bid"])
-                asks.append(snap["ask"])
-            else:
-                deltas.append(None)
-                premiums.append(0)
-                bids.append(0)
-                asks.append(0)
-
-            progress2.progress((i + 1) / len(df))
-
-        df["Delta"] = deltas
-        df["Premium"] = premiums
-        df["Bid"] = bids
-        df["Ask"] = asks
-
-        # nettoyage
-        df = df[df["Delta"].notna()]
-
-        # 🎯 METRIQUE CLÉ
-        df["Premium/Strike %"] = (df["Premium"] / df["Strike"] * 100).round(2)
-
-        df = df.sort_values(["Ticker", "Delta"])
-
-        # -------------------------
-        # DISPLAY
-        # -------------------------
-        st.subheader("🔥 Analyse Wheel complète")
-        st.dataframe(df, use_container_width=True)
-
-        st.subheader("📌 Par stock")
-        for ticker in df["Ticker"].unique():
-            st.markdown(f"### {ticker}")
-            st.dataframe(df[df["Ticker"] == ticker], use_container_width=True)
-
+        st.subheader("🔥 Wheel Trades détectés")
+        st.dataframe(df.sort_values("Premium/Strike %", ascending=False), use_container_width=True)
     else:
-        st.error("⚠️ Aucun résultat — change la date")
-
-    st.caption(f"Options trouvées: {len(df)}")
+        st.error("⚠️ Aucun trade trouvé")
 
 else:
     st.info("👉 Clique sur Calculer")
