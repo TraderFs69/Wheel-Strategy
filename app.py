@@ -9,12 +9,22 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner SP500 (NO FILTER MODE)")
+st.title("🔥 TEA - Wheel Scanner (EV Quant)")
 
-st.warning("⚠️ Mode debug : seulement filtre distance (-3% à -8%)")
+st.warning("⚠️ À utiliser après la fermeture du marché (EOD)")
 
-selected_date = st.date_input("Expiration")
-run = st.button("🚀 Lancer")
+# -------------------------
+# UI
+# -------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    selected_date = st.date_input("Expiration")
+
+with col2:
+    max_tickers = st.slider("Tickers scannés", 20, 500, 150)
+
+run = st.button("🚀 Lancer scan")
 
 # -------------------------
 # SP500
@@ -25,10 +35,10 @@ def get_sp500():
     df = pd.read_csv(url)
     return df["Symbol"].tolist()
 
-tickers = get_sp500()
+tickers = get_sp500()[:max_tickers]
 
 # -------------------------
-# CLOSE PRICE
+# DATA
 # -------------------------
 @st.cache_data(ttl=3600)
 def get_close_price(ticker):
@@ -38,9 +48,6 @@ def get_close_price(ticker):
     except:
         return None
 
-# -------------------------
-# OPTIONS
-# -------------------------
 @st.cache_data(ttl=3600)
 def get_options(ticker):
     try:
@@ -51,9 +58,6 @@ def get_options(ticker):
     except:
         return []
 
-# -------------------------
-# SNAPSHOT REST
-# -------------------------
 @st.cache_data(ttl=600)
 def get_snapshot(ticker, symbol):
     try:
@@ -69,7 +73,6 @@ def get_snapshot(ticker, symbol):
 if run:
 
     results = []
-
     progress = st.progress(0)
 
     for i, ticker in enumerate(tickers):
@@ -77,7 +80,6 @@ if run:
         progress.progress((i + 1) / len(tickers))
 
         price = get_close_price(ticker)
-
         if price is None:
             continue
 
@@ -90,24 +92,19 @@ if run:
 
             opt_date = datetime.strptime(opt.expiration_date, "%Y-%m-%d").date()
 
-            # 🎯 DATE EXACTE (on garde ça)
             if opt_date != selected_date:
                 continue
 
             strike = opt.strike_price
 
-            # 🔥 SEUL FILTRE
+            # 🔥 SEUL FILTRE STRIKE
             distance = (price - strike) / price
-
             if not (0.03 <= distance <= 0.08):
                 continue
 
             symbol = opt.ticker
 
             data = get_snapshot(ticker, symbol)
-
-            time.sleep(0.005)
-
             if data is None:
                 continue
 
@@ -120,8 +117,26 @@ if run:
             ask = quote.get("ask")
 
             delta = greeks.get("delta")
-            theta = greeks.get("theta")
-            vega = greeks.get("vega")
+
+            if bid is None or delta is None:
+                continue
+
+            # -------------------------
+            # EV CALCULATION 🔥
+            # -------------------------
+            dte = (opt_date - datetime.today().date()).days
+            if dte <= 0:
+                continue
+
+            prob_itm = abs(delta)
+            prob_otm = 1 - prob_itm
+
+            gain = bid
+            loss = strike - bid
+
+            EV = (prob_otm * gain) - (prob_itm * loss)
+
+            annual_ev = EV * (365 / dte)
 
             results.append({
                 "Ticker": ticker,
@@ -133,18 +148,30 @@ if run:
                 "Bid": bid,
                 "Ask": ask,
 
-                "Delta": delta,
-                "Theta": theta,
-                "Vega": vega,
+                "Delta": round(delta, 3),
 
-                "Symbol": symbol
+                "EV": round(EV, 2),
+                "EV Annual": round(annual_ev, 2),
+                "DTE": dte
             })
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat → problème vient de la DATA ou DATE")
+        st.error("⚠️ Aucun trade trouvé")
     else:
-        st.success(f"{len(df)} options trouvées")
+        df = df.sort_values("EV Annual", ascending=False)
 
-        st.dataframe(df.sort_values(["Ticker", "Strike"]), use_container_width=True)
+        st.subheader("🔥 TOP EV TRADES")
+        st.dataframe(df, use_container_width=True)
+
+        st.subheader("🏆 Top 10")
+
+        for _, row in df.head(10).iterrows():
+            st.markdown(f"""
+            **{row['Ticker']}** | Strike {row['Strike']}  
+            💰 Bid: {row['Bid']}  
+            📊 Delta: {row['Delta']}  
+            📈 EV: {row['EV']}  
+            🚀 EV Annual: {row['EV Annual']}
+            """)
