@@ -9,9 +9,9 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner SP500 (LIVE MODE)")
+st.title("🔥 TEA - Wheel Scanner SP500 (LIVE STABLE)")
 
-st.warning("⚠️ Mode LIVE : prix intraday (delayed)")
+st.warning("⚠️ Mode LIVE avec fallback → prix toujours disponible")
 
 selected_date = st.date_input("Expiration")
 run = st.button("🚀 Lancer")
@@ -28,7 +28,7 @@ def get_sp500():
 tickers = get_sp500()
 
 # -------------------------
-# LIVE PRICE
+# LIVE PRICE (FIXED)
 # -------------------------
 @st.cache_data(ttl=60)
 def get_live_price(ticker):
@@ -36,11 +36,18 @@ def get_live_price(ticker):
         quote = client.get_last_quote(ticker)
 
         if quote and quote.bid is not None and quote.ask is not None:
-            return (quote.bid + quote.ask) / 2  # 🔥 mid price
+            price = (quote.bid + quote.ask) / 2
+            if price > 0:
+                return price
 
         trade = client.get_last_trade(ticker)
-        if trade and hasattr(trade, "price"):
+        if trade and hasattr(trade, "price") and trade.price > 0:
             return trade.price
+
+        # 🔥 fallback CLOSE (très important)
+        data = client.get_previous_close_agg(ticker)
+        if data and len(data) > 0:
+            return data[0].close
 
         return None
 
@@ -98,16 +105,15 @@ if run:
 
             opt_date = datetime.strptime(opt.expiration_date, "%Y-%m-%d").date()
 
-            # 🎯 DATE EXACTE
             if opt_date != selected_date:
                 continue
 
             strike = opt.strike_price
 
-            # 🔥 SEUL FILTRE
+            # 🔥 FIX : filtre légèrement élargi pour live
             distance = (price - strike) / price
 
-            if not (0.03 <= distance <= 0.08):
+            if not (0.02 <= distance <= 0.10):
                 continue
 
             symbol = opt.ticker
@@ -152,7 +158,7 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat → vérifier la date sélectionnée")
+        st.error("⚠️ Aucun résultat → probablement la date sélectionnée")
     else:
         st.success(f"{len(df)} options trouvées")
 
