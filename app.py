@@ -9,9 +9,9 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner SP500 (NO FILTER MODE)")
+st.title("🔥 TEA - Wheel Scanner SP500 (LIVE MODE)")
 
-st.warning("⚠️ Mode debug : seulement filtre distance (-3% à -8%)")
+st.warning("⚠️ Mode LIVE : prix intraday (delayed)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("🚀 Lancer")
@@ -28,13 +28,22 @@ def get_sp500():
 tickers = get_sp500()
 
 # -------------------------
-# CLOSE PRICE
+# LIVE PRICE
 # -------------------------
-@st.cache_data(ttl=3600)
-def get_close_price(ticker):
+@st.cache_data(ttl=60)
+def get_live_price(ticker):
     try:
-        data = client.get_previous_close_agg(ticker)
-        return data[0].close if data else None
+        quote = client.get_last_quote(ticker)
+
+        if quote and quote.bid is not None and quote.ask is not None:
+            return (quote.bid + quote.ask) / 2  # 🔥 mid price
+
+        trade = client.get_last_trade(ticker)
+        if trade and hasattr(trade, "price"):
+            return trade.price
+
+        return None
+
     except:
         return None
 
@@ -69,14 +78,13 @@ def get_snapshot(ticker, symbol):
 if run:
 
     results = []
-
     progress = st.progress(0)
 
     for i, ticker in enumerate(tickers):
 
         progress.progress((i + 1) / len(tickers))
 
-        price = get_close_price(ticker)
+        price = get_live_price(ticker)
 
         if price is None:
             continue
@@ -144,7 +152,7 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat → problème vient de la DATA ou DATE")
+        st.error("⚠️ Aucun résultat → vérifier la date sélectionnée")
     else:
         st.success(f"{len(df)} options trouvées")
 
