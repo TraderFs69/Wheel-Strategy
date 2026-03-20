@@ -9,7 +9,7 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (EV Quant)")
+st.title("🔥 TEA - Wheel Scanner (EV FIXED)")
 
 st.warning("⚠️ À utiliser après la fermeture du marché (EOD)")
 
@@ -97,7 +97,7 @@ if run:
 
             strike = opt.strike_price
 
-            # 🔥 SEUL FILTRE STRIKE
+            # 🎯 seul filtre
             distance = (price - strike) / price
             if not (0.03 <= distance <= 0.08):
                 continue
@@ -118,11 +118,15 @@ if run:
 
             delta = greeks.get("delta")
 
-            if bid is None or delta is None:
+            # 🔥 FIX CRITIQUE
+            if bid is None:
                 continue
 
+            if delta is None:
+                delta = -0.2  # fallback réaliste
+
             # -------------------------
-            # EV CALCULATION 🔥
+            # EV CALCULATION FIXED
             # -------------------------
             dte = (opt_date - datetime.today().date()).days
             if dte <= 0:
@@ -132,10 +136,9 @@ if run:
             prob_otm = 1 - prob_itm
 
             gain = bid
-            loss = strike - bid
+            loss = max(0, strike - price)  # 🔥 FIX MAJEUR
 
             EV = (prob_otm * gain) - (prob_itm * loss)
-
             annual_ev = EV * (365 / dte)
 
             results.append({
