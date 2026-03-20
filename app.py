@@ -9,22 +9,15 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner (EV FIXED)")
+st.title("🔥 TEA - Wheel Scanner (EV DISPLAY MODE)")
 
-st.warning("⚠️ À utiliser après la fermeture du marché (EOD)")
+st.warning("⚠️ Mode affichage : AUCUN filtre sauf distance")
 
 # -------------------------
 # UI
 # -------------------------
-col1, col2 = st.columns(2)
-
-with col1:
-    selected_date = st.date_input("Expiration")
-
-with col2:
-    max_tickers = st.slider("Tickers scannés", 20, 500, 150)
-
-run = st.button("🚀 Lancer scan")
+selected_date = st.date_input("Expiration")
+run = st.button("🚀 Lancer")
 
 # -------------------------
 # SP500
@@ -35,7 +28,7 @@ def get_sp500():
     df = pd.read_csv(url)
     return df["Symbol"].tolist()
 
-tickers = get_sp500()[:max_tickers]
+tickers = get_sp500()
 
 # -------------------------
 # DATA
@@ -97,7 +90,7 @@ if run:
 
             strike = opt.strike_price
 
-            # 🎯 seul filtre
+            # 🎯 SEUL FILTRE
             distance = (price - strike) / price
             if not (0.03 <= distance <= 0.08):
                 continue
@@ -115,28 +108,27 @@ if run:
             premium = day.get("close")
             bid = quote.get("bid")
             ask = quote.get("ask")
-
             delta = greeks.get("delta")
 
-            # 🔥 FIX CRITIQUE
+            # 🔥 FALLBACKS (IMPORTANT)
             if bid is None:
-                continue
+                bid = 0
 
             if delta is None:
-                delta = -0.2  # fallback réaliste
+                delta = -0.2
 
             # -------------------------
-            # EV CALCULATION FIXED
+            # EV CALCUL (SANS FILTRE)
             # -------------------------
             dte = (opt_date - datetime.today().date()).days
             if dte <= 0:
-                continue
+                dte = 1
 
             prob_itm = abs(delta)
             prob_otm = 1 - prob_itm
 
             gain = bid
-            loss = max(0, strike - price)  # 🔥 FIX MAJEUR
+            loss = max(0, strike - price)
 
             EV = (prob_otm * gain) - (prob_itm * loss)
             annual_ev = EV * (365 / dte)
@@ -161,11 +153,12 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun trade trouvé")
+        st.error("⚠️ Aucun résultat → problème ailleurs")
     else:
+        st.success(f"{len(df)} options analysées")
+
         df = df.sort_values("EV Annual", ascending=False)
 
-        st.subheader("🔥 TOP EV TRADES")
         st.dataframe(df, use_container_width=True)
 
         st.subheader("🏆 Top 10")
