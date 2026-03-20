@@ -90,7 +90,7 @@ if run:
 
             opt_date = datetime.strptime(opt.expiration_date, "%Y-%m-%d").date()
 
-            # 🎯 DATE EXACTE (on garde ça)
+            # 🎯 DATE EXACTE
             if opt_date != selected_date:
                 continue
 
@@ -113,15 +113,17 @@ if run:
 
             day = data.get("day", {})
             greeks = data.get("greeks", {})
-            quote = data.get("last_quote", {})
 
             premium = day.get("close")
-            bid = quote.get("bid")
-            ask = quote.get("ask")
 
             delta = greeks.get("delta")
             theta = greeks.get("theta")
             vega = greeks.get("vega")
+
+            # 🔥 SCORE
+            score = None
+            if premium is not None and price:
+                score = (premium / price) * 100
 
             results.append({
                 "Ticker": ticker,
@@ -130,8 +132,7 @@ if run:
                 "Distance %": round(distance * 100, 2),
 
                 "Premium": premium,
-                "Bid": bid,
-                "Ask": ask,
+                "Score %": round(score, 2) if score else None,
 
                 "Delta": delta,
                 "Theta": theta,
