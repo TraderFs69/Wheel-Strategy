@@ -9,9 +9,9 @@ API_KEY = st.secrets["POLYGON_API_KEY"]
 client = RESTClient(API_KEY)
 
 st.set_page_config(layout="wide")
-st.title("🔥 TEA - Wheel Scanner SP500 (LIVE SIMPLE)")
+st.title("🔥 TEA - Wheel Scanner SP500 (NO FILTER MODE)")
 
-st.warning("⚠️ Mode LIVE avec last trade (stable)")
+st.warning("⚠️ Mode debug : seulement filtre distance (-3% à -8%)")
 
 selected_date = st.date_input("Expiration")
 run = st.button("🚀 Lancer")
@@ -28,15 +28,13 @@ def get_sp500():
 tickers = get_sp500()
 
 # -------------------------
-# LIVE PRICE SIMPLE
+# CLOSE PRICE
 # -------------------------
-@st.cache_data(ttl=60)
-def get_live_price(ticker):
+@st.cache_data(ttl=3600)
+def get_close_price(ticker):
     try:
-        trade = client.get_last_trade(ticker)
-        if trade and hasattr(trade, "price"):
-            return trade.price
-        return None
+        data = client.get_previous_close_agg(ticker)
+        return data[0].close if data else None
     except:
         return None
 
@@ -71,13 +69,14 @@ def get_snapshot(ticker, symbol):
 if run:
 
     results = []
+
     progress = st.progress(0)
 
     for i, ticker in enumerate(tickers):
 
         progress.progress((i + 1) / len(tickers))
 
-        price = get_live_price(ticker)
+        price = get_close_price(ticker)
 
         if price is None:
             continue
@@ -91,13 +90,13 @@ if run:
 
             opt_date = datetime.strptime(opt.expiration_date, "%Y-%m-%d").date()
 
-            # 🎯 DATE EXACTE (on ne touche pas)
+            # 🎯 DATE EXACTE (on garde ça)
             if opt_date != selected_date:
                 continue
 
             strike = opt.strike_price
 
-            # 🔥 SEUL FILTRE (inchangé)
+            # 🔥 SEUL FILTRE
             distance = (price - strike) / price
 
             if not (0.03 <= distance <= 0.08):
@@ -114,17 +113,15 @@ if run:
 
             day = data.get("day", {})
             greeks = data.get("greeks", {})
+            quote = data.get("last_quote", {})
 
             premium = day.get("close")
+            bid = quote.get("bid")
+            ask = quote.get("ask")
 
             delta = greeks.get("delta")
             theta = greeks.get("theta")
             vega = greeks.get("vega")
-
-            # 🔥 SCORE
-            score = None
-            if premium is not None and price:
-                score = (premium / price) * 100
 
             results.append({
                 "Ticker": ticker,
@@ -133,7 +130,8 @@ if run:
                 "Distance %": round(distance * 100, 2),
 
                 "Premium": premium,
-                "Score %": round(score, 2) if score else None,
+                "Bid": bid,
+                "Ask": ask,
 
                 "Delta": delta,
                 "Theta": theta,
@@ -145,7 +143,7 @@ if run:
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.error("⚠️ Aucun résultat → vérifier la date sélectionnée")
+        st.error("⚠️ Aucun résultat → problème vient de la DATA ou DATE")
     else:
         st.success(f"{len(df)} options trouvées")
 
